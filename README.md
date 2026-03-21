@@ -8,6 +8,12 @@
 
 > "I corrected Claude about checking tsconfig strict mode first. A week later, different project, similar type error — Claude checked strict mode before I said anything. That's when I stopped thinking of it as a plugin."
 
+## See It In Action
+
+[![Evolving Lite Demo](https://img.youtube.com/vi/mR6Ss6Tnzm4/maxresdefault.jpg)](https://www.youtube.com/watch?v=mR6Ss6Tnzm4)
+
+*2 min demo: Claude recalls past decisions, learns from a correction, and applies it automatically — no prompt needed.*
+
 ## What Makes This Different
 
 Most Claude Code tools add features. Evolving Lite adds **feedback loops**.
