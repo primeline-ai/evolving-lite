@@ -15,6 +15,13 @@ fi
 # Ensure memory directories exist
 mkdir -p "${PLUGIN_ROOT}/_memory/experiences" "${PLUGIN_ROOT}/_memory/analytics" "${PLUGIN_ROOT}/_memory/sessions" "${PLUGIN_ROOT}/_memory/projects" 2>/dev/null
 
+# Import recent Codex learnings into the same experience pool when available.
+codex_imported=0
+if command -v python3 >/dev/null 2>&1 && [[ -f "${PLUGIN_ROOT}/hooks/scripts/import-codex-memory.py" ]]; then
+  codex_imported=$(python3 "${PLUGIN_ROOT}/hooks/scripts/import-codex-memory.py" 2>/dev/null | tr -cd '0-9')
+  [[ -z "$codex_imported" ]] && codex_imported=0
+fi
+
 # Session counter (ONLY place this is incremented)
 session_id="${CLAUDE_SESSION_ID:-$$}"
 flag_file="/tmp/evolving-lite-session-counted-${session_id}"
@@ -51,10 +58,14 @@ if [[ -d "${PLUGIN_ROOT}/_memory/experiences/_prewarmed" ]]; then
   pw_count=$(find "${PLUGIN_ROOT}/_memory/experiences/_prewarmed" -name "exp-pw-*.json" 2>/dev/null | wc -l | tr -cd '0-9')
 fi
 total_exp=$((exp_count + pw_count))
+import_suffix=""
+if [[ "$codex_imported" -gt 0 ]]; then
+  import_suffix=" | Codex +${codex_imported}"
+fi
 
 # Write sentinel
 sentinel_file="/tmp/evolving-lite-sentinel-health-${session_id}.json"
 echo "{\"hook\":\"health-sentinel\",\"ts\":$(date +%s),\"status\":\"ok\",\"session\":\"${session_id}\"}" > "$sentinel_file" 2>/dev/null
 
-echo "{\"systemMessage\": \"Evolving Lite v1.0 | Session ${session_count} | Tier ${tier} (${tier_label}) | ${total_exp} experiences\", \"continue\": true}"
+echo "{\"systemMessage\": \"Evolving Lite v1.0 | Session ${session_count} | Tier ${tier} (${tier_label}) | ${total_exp} experiences${import_suffix}\", \"continue\": true}"
 exit 0

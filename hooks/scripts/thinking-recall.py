@@ -29,6 +29,7 @@ from common import (
     PLUGIN_ROOT, EXPERIENCES_DIR, PREWARMED_DIR,
     write_sentinel, is_tier_active, read_hook_input, safe_read_json
 )
+from codex_bridge import sync_codex_memory
 
 STOP_WORDS = {
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
@@ -136,6 +137,9 @@ def main():
         if len(context_text) < 20:
             write_sentinel("thinking-recall", "skip-short")
             sys.exit(0)
+
+        # Pull in fresh Codex learnings before we search the shared memory pool.
+        sync_codex_memory(force=False)
 
         # Load experiences
         experiences = load_experiences()

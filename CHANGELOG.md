@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Automatic Codex Desktop session import from `~/.codex/sessions/` into the shared experience store
+- Shared correction and transcript extraction helpers so Claude-native hooks and Codex import use the same learning heuristics
+
+### Fixed
+- Experience IDs now include microseconds to prevent same-second writes from overwriting each other
+- Codex import state is tracked locally without being committed
+
+
 ## v1.0.0 (2026-03-17)
 
 Initial release.

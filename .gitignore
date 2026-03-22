@@ -3,6 +3,7 @@ _memory/experiences/exp-*.json
 _memory/experiences/index.json
 _memory/analytics/*.jsonl
 _memory/analytics/usage.json
+_memory/analytics/codex-import-state.json
 _memory/sessions/*.md
 _memory/projects/*.json
 _memory/plans/*.md

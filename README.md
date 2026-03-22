@@ -26,6 +26,8 @@ Most Claude Code tools add features. Evolving Lite adds **feedback loops**.
 
 **It gets leaner, not fatter.** Old experiences decay. Stale sessions get archived. The system prunes itself so it stays fast at month 6 the same way it was at day 1.
 
+**It can absorb recent Codex Desktop learnings too.** If local Codex session rollouts exist in `~/.codex/sessions/`, startup import folds durable corrections and decisions into the same memory pool automatically.
+
 ## Quick Install
 
 ```bash

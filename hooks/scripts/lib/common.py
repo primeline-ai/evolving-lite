@@ -198,7 +198,8 @@ def create_experience(
     if tags is None:
         tags = []
 
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # Microseconds avoid collisions when several experiences are created in one hook run.
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     exp_id = f"exp-{ts}"
     exp_file = EXPERIENCES_DIR / f"{exp_id}.json"
 
