@@ -14,7 +14,15 @@
 
 *2 min demo: Claude recalls past decisions, learns from a correction, and applies it automatically — no prompt needed.*
 
-> **Pair with [Claude Health](https://github.com/tw93/claude-health)** for the full loop: Claude Health audits your config and finds what's broken. Evolving Lite's hooks prevent it from breaking again. Audit + Prevention.
+## Audit + Prevention
+
+Evolving Lite prevents drift in real-time. [Claude Health](https://github.com/tw93/claude-health) audits your full config on demand. Together they close the loop.
+
+| | Evolving Lite | Claude Health |
+|---|---|---|
+| **When** | Every session (automatic) | On demand (`/health`) |
+| **How** | Hooks, pulse checks, correction pipeline | 6-layer config audit with parallel diagnostics |
+| **Catches** | Drift as it happens | Existing gaps and misconfigurations |
 
 ## What Makes This Different
 
