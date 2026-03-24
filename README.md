@@ -14,6 +14,8 @@
 
 *2 min demo: Claude recalls past decisions, learns from a correction, and applies it automatically — no prompt needed.*
 
+> **Pair with [Claude Health](https://github.com/tw93/claude-health)** for the full loop: Claude Health audits your config and finds what's broken. Evolving Lite's hooks prevent it from breaking again. Audit + Prevention.
+
 ## What Makes This Different
 
 Most Claude Code tools add features. Evolving Lite adds **feedback loops**.
