@@ -4,6 +4,9 @@
 [![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](CHANGELOG.md)
 [![Works with Claude Code](https://img.shields.io/badge/works%20with-Claude%20Code-orange.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
+
+![evolving-lite](assets/hero.png)
+
 **Claude Code that learns from you.** Install once. Work normally. The system remembers what worked, learns from your corrections, and gets better every session — without you lifting a finger.
 
 > "I corrected Claude about checking tsconfig strict mode first. A week later, different project, similar type error — Claude checked strict mode before I said anything. That's when I stopped thinking of it as a plugin."
