@@ -1,32 +1,7 @@
 {
-  "version": "1.0",
-  "description": "Delegation scoring and routing configuration",
-  "score_factors": {
-    "positive": {
-      "scope_multi_file": {"points": 2, "signal": "scope > 2 files"},
-      "bulk_operation": {"points": 2, "signal": "bulk/batch operation"},
-      "research_learn": {"points": 2, "signal": "research or learning task"},
-      "code_review": {"points": 2, "signal": "code review request"},
-      "exploration_search": {"points": 3, "signal": "exploration or search"},
-      "independent_task": {"points": 2, "signal": "independent, parallelizable task"}
-    },
-    "negative": {
-      "critical_keywords": {"points": -10, "patterns": ["production", "deploy", "payment", "password", "secret", "credential", "api.key", "delete all", "drop database", "rm -rf"]},
-      "user_wants_to_see": {"points": -5, "patterns": ["show me", "explain", "walk me through", "zeig mir"]},
-      "high_complexity": {"points": -3, "signal": "complexity > 6"}
-    }
-  },
+  "version": "1.1",
+  "description": "Delegation routing configuration. Scoring rules are hardcoded in hooks/scripts/delegation-enforcer.py for safety.",
   "delegation_threshold": 3,
-  "destructive_patterns": [
-    "delete\\s+(all|every|.*\\*)",
-    "rm\\s+-rf",
-    "drop\\s+(table|database)",
-    "overwrite\\s+(all|every)",
-    "reset\\s+--hard",
-    "force\\s+push",
-    "truncate",
-    "destroy"
-  ],
   "task_type_routing": {
     "exploration": {"model": "haiku", "effort": "low", "max_turns": 3},
     "debugging": {"model": "sonnet", "effort": "medium", "max_turns": 6},
