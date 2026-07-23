@@ -93,6 +93,8 @@ Doctor will tell you if it is missing. If you want lightweight session memory on
 [Starter System](https://github.com/primeline-ai/claude-code-starter-system) is the smaller
 entry point. See [docs/JUNCTIONS.md](docs/JUNCTIONS.md) for the file-level map of all 7 junctions.
 
+One honesty note on the fitness signal: delegation outcomes are scored from what the loop can actually observe - dispatching a subagent counts as *neutral*, not positive (an action is not a success), and only the quality heuristic or a missed delegation moves a score. The signal measures routing discipline, not work quality.
+
 ## Quick Install
 
 ```bash

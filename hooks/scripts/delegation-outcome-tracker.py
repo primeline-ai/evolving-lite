@@ -169,13 +169,15 @@ def _unlink_quality_verdict(session_id: str) -> None:
 
 
 def _apply_quality_signal(base_outcome: str, was_delegated: bool, verdict):
-    """Returns (final_outcome, shadow). Only ever touches the auto-positive
-    branch. Fail-open: off-mode or absent/ok/non-dict verdict -> unchanged."""
+    """Returns (final_outcome, shadow). Only ever touches DELEGATED rows
+    (whose base outcome is neutral since the honest-derivation fix - it was
+    the auto-positive branch before). Fail-open: off-mode or absent/ok/
+    non-dict verdict -> unchanged."""
     try:
         mode = _quality_signal_mode()
         if mode == "off":
             return base_outcome, None
-        if not was_delegated or base_outcome != "positive":
+        if not was_delegated:
             return base_outcome, None
         if not isinstance(verdict, dict) or verdict.get("quality") != "low":
             return base_outcome, None
@@ -275,10 +277,12 @@ def _parse_ts_utc(ts_raw: str) -> Optional[datetime]:
 
 
 def _derive_outcome(was_delegated: bool, score: float, threshold: float) -> str:
-    """was_delegated=True -> positive | missed above-threshold -> negative |
-    legitimate self-handling below threshold -> neutral."""
+    """was_delegated=True -> neutral (dispatching a subagent is an ACTION, not
+    a success - scoring it positive builds a fitness signal out of its own
+    routing decisions) | missed above-threshold -> negative | legitimate
+    self-handling below threshold -> neutral."""
     if was_delegated:
-        return "positive"
+        return "neutral"
     if score >= threshold:
         return "negative"
     return "neutral"
