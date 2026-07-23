@@ -275,10 +275,12 @@ def _parse_ts_utc(ts_raw: str) -> Optional[datetime]:
 
 
 def _derive_outcome(was_delegated: bool, score: float, threshold: float) -> str:
-    """was_delegated=True -> positive | missed above-threshold -> negative |
-    legitimate self-handling below threshold -> neutral."""
+    """was_delegated=True -> neutral (dispatching a subagent is an ACTION, not
+    a success - scoring it positive builds a fitness signal out of its own
+    routing decisions) | missed above-threshold -> negative | legitimate
+    self-handling below threshold -> neutral."""
     if was_delegated:
-        return "positive"
+        return "neutral"
     if score >= threshold:
         return "negative"
     return "neutral"
