@@ -146,7 +146,9 @@ def test_fitness_bridge_gated_then_active(tmp_path):
         _run_hook(TRACKER, {"session_id": sid, "hook_event_name": "Stop"}, env)
         rows = [json.loads(l) for l in fitness.read_text().splitlines()]
         assert rows[-1]["system"] == "delegation"
-        assert rows[-1]["outcome"] == "positive"
+        # honest-derivation fix: dispatching a subagent is an ACTION, not a
+        # success - a delegated Stop without a quality verdict scores neutral
+        assert rows[-1]["outcome"] == "neutral"
         assert rows[-1]["details"]["was_delegated"] is True
     finally:
         marker.unlink(missing_ok=True)

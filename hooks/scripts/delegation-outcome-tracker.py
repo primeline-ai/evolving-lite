@@ -169,13 +169,15 @@ def _unlink_quality_verdict(session_id: str) -> None:
 
 
 def _apply_quality_signal(base_outcome: str, was_delegated: bool, verdict):
-    """Returns (final_outcome, shadow). Only ever touches the auto-positive
-    branch. Fail-open: off-mode or absent/ok/non-dict verdict -> unchanged."""
+    """Returns (final_outcome, shadow). Only ever touches DELEGATED rows
+    (whose base outcome is neutral since the honest-derivation fix - it was
+    the auto-positive branch before). Fail-open: off-mode or absent/ok/
+    non-dict verdict -> unchanged."""
     try:
         mode = _quality_signal_mode()
         if mode == "off":
             return base_outcome, None
-        if not was_delegated or base_outcome != "positive":
+        if not was_delegated:
             return base_outcome, None
         if not isinstance(verdict, dict) or verdict.get("quality") != "low":
             return base_outcome, None
