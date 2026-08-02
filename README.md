@@ -135,8 +135,13 @@ The system learns from your corrections automatically.
 - **On Windows: concurrent-write safety is not guaranteed.** `locked_json_rmw`
   uses `fcntl`, which is POSIX-only; on Windows it degrades to a lock-free
   fallback, so two hooks writing the same JSON file at the same moment can lose
-  one of the writes. Single-session use is unaffected. Proven by CI, which is
-  why that test is skipped on Windows rather than quietly passing.
+  one of the writes. This is about concurrent *processes*, not about how many
+  people or sessions are involved - a single Claude Code session fires many
+  hooks as separate processes, so one session is enough to hit it. Sequential
+  single-writer use is fine. A CI run did demonstrate the loss (49 of 50
+  appends survived); that test is now skipped on Windows rather than passing by
+  luck, so CI no longer checks this - the limitation stands until the module
+  implements real Windows locking.
 - **On Windows: Git Bash.** Every hook is registered in shell form starting with
   `bash`, and Claude Code only routes shell-form hooks through Git Bash when Git
   Bash is installed - otherwise it falls back to PowerShell, where `bash ...` is

@@ -68,7 +68,9 @@ def _append_worker(path: str, label: str, n: int) -> None:
         "module falls back to a no-op stub (see its `except ImportError` branch), "
         "so concurrent appends CAN be lost there. This is a real limitation, not "
         "a test-environment quirk - skipping asserts nothing about Windows safety. "
-        "Remove this skip only once the module implements msvcrt-based locking."
+        "Remove this skip once the module implements real Windows locking, by any "
+        "mechanism (msvcrt.locking, LockFileEx via ctypes, ...) - the exit "
+        "criterion is working mutual exclusion, not a particular API."
     ),
 )
 def test_remerge_concurrent_appenders_lose_nothing(tmp_path):
