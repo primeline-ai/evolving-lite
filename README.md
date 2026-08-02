@@ -132,6 +132,12 @@ The system learns from your corrections automatically.
 - Claude Code 2.1.69+
 - Python 3.10+
 - Bash 3.2+ (macOS stock bash works)
+- **On Windows: Git Bash.** Every hook is registered in shell form starting with
+  `bash`, and Claude Code only routes shell-form hooks through Git Bash when Git
+  Bash is installed - otherwise it falls back to PowerShell, where `bash ...` is
+  not a command and no hook runs. Git Bash ships with
+  [Git for Windows](https://git-scm.com/download/win). Not verified on a Windows
+  machine; the behaviour is taken from the Claude Code hooks documentation.
 
 ## What to Expect
 

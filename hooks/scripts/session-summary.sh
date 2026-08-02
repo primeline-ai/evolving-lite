@@ -33,8 +33,10 @@ if [ "$session_count" -lt 3 ]; then
   exit 0
 fi
 
-# Read stdin (hook input)
-input=$(cat 2>/dev/null || echo "{}")
+# Drain stdin. This hook does not use the payload, but Claude Code writes it to
+# our stdin regardless, and leaving it unread risks SIGPIPE on the writer. The
+# value is deliberately discarded - do not reintroduce an unused variable here.
+cat >/dev/null 2>&1 || true
 
 sessions_dir="${PLUGIN_ROOT}/_memory/sessions"
 mkdir -p "$sessions_dir"
