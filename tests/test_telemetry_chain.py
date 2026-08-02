@@ -11,6 +11,8 @@ import sys
 import uuid
 from pathlib import Path
 
+from conftest import pending_marker
+
 REPO = Path(__file__).resolve().parents[1]
 ENFORCER = REPO / "hooks" / "scripts" / "delegation-enforcer.py"
 TRACKER = REPO / "hooks" / "scripts" / "delegation-outcome-tracker.py"
@@ -42,7 +44,7 @@ def test_full_delegation_outcome_chain(tmp_path):
     root = _plugin_tree(tmp_path)
     sid = f"test-{uuid.uuid4().hex[:12]}"
     env = {"CLAUDE_PLUGIN_ROOT": str(root), "CLAUDE_SESSION_ID": sid}
-    marker = Path(f"/tmp/delegation-pending-{sid}.json")
+    marker = pending_marker(sid)
 
     try:
         # 1. UserPromptSubmit: delegation-worthy prompt -> suggestion + marker.
@@ -91,7 +93,7 @@ def test_missed_delegation_records_gap(tmp_path):
     root = _plugin_tree(tmp_path)
     sid = f"test-{uuid.uuid4().hex[:12]}"
     env = {"CLAUDE_PLUGIN_ROOT": str(root), "CLAUDE_SESSION_ID": sid}
-    marker = Path(f"/tmp/delegation-pending-{sid}.json")
+    marker = pending_marker(sid)
 
     try:
         _run_hook(ENFORCER, {
@@ -117,7 +119,7 @@ def test_fitness_bridge_gated_then_active(tmp_path):
     root = _plugin_tree(tmp_path)
     sid = f"test-{uuid.uuid4().hex[:12]}"
     env = {"CLAUDE_PLUGIN_ROOT": str(root), "CLAUDE_SESSION_ID": sid}
-    marker = Path(f"/tmp/delegation-pending-{sid}.json")
+    marker = pending_marker(sid)
     fitness = root / "_memory" / "analytics" / "cognitive-fitness.jsonl"
     cfg = root / "_graph" / "cache" / "delegation-config.json"
 

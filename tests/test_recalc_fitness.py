@@ -14,6 +14,8 @@ import sys
 import uuid
 from pathlib import Path
 
+from conftest import pending_marker
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "recalc-fitness.py"
 ENFORCER = REPO / "hooks" / "scripts" / "delegation-enforcer.py"
@@ -382,7 +384,7 @@ class TestEnforcerConsumesFitness:
             assert "fitness" in ctx.lower()
             assert "0.8136" in ctx
         finally:
-            Path(f"/tmp/delegation-pending-{sid}.json").unlink(missing_ok=True)
+            pending_marker(sid).unlink(missing_ok=True)
 
     def test_no_hint_for_foreign_entity_keys(self, tmp_path):
         # Only the exact (task_type, task_type) cell is surfaced; a foreign
@@ -396,7 +398,7 @@ class TestEnforcerConsumesFitness:
             ctx = out["hookSpecificOutput"]["additionalContext"]
             assert "fitness" not in ctx.lower()
         finally:
-            Path(f"/tmp/delegation-pending-{sid}.json").unlink(missing_ok=True)
+            pending_marker(sid).unlink(missing_ok=True)
 
     def test_no_hint_when_cache_absent(self, tmp_path):
         root = self._enforcer_tree(tmp_path)
@@ -407,4 +409,4 @@ class TestEnforcerConsumesFitness:
             assert "DELEGATION SUGGESTED" in ctx
             assert "fitness" not in ctx.lower()
         finally:
-            Path(f"/tmp/delegation-pending-{sid}.json").unlink(missing_ok=True)
+            pending_marker(sid).unlink(missing_ok=True)

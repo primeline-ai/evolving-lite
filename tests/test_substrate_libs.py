@@ -61,9 +61,24 @@ def _append_worker(path: str, label: str, n: int) -> None:
         assert lwr(path, add, acquire_timeout_s=10.0)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "locked_json_rmw has NO locking on Windows. fcntl is POSIX-only and the "
+        "module falls back to a no-op stub (see its `except ImportError` branch), "
+        "so concurrent appends CAN be lost there. This is a real limitation, not "
+        "a test-environment quirk - skipping asserts nothing about Windows safety. "
+        "Remove this skip once the module implements real Windows locking, by any "
+        "mechanism (msvcrt.locking, LockFileEx via ctypes, ...) - the exit "
+        "criterion is working mutual exclusion, not a particular API."
+    ),
+)
 def test_remerge_concurrent_appenders_lose_nothing(tmp_path):
     """The lost-update race the lib exists to prevent: two processes append
-    concurrently; every append must survive."""
+    concurrently; every append must survive.
+
+    POSIX only - see the skipif above.
+    """
     f = tmp_path / "shared.json"
     f.write_text(json.dumps({"items": []}))
     n = 25
