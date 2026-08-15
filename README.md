@@ -98,27 +98,25 @@ One honesty note on the fitness signal: delegation outcomes are scored from what
 ## Quick Install
 
 ```bash
-# 1. Clone
-git clone https://github.com/primeline-ai/evolving-lite ~/.claude-plugins/evolving-lite
+# 1. Clone into your skills directory - this is what makes it load
+git clone https://github.com/primeline-ai/evolving-lite ~/.claude/skills/evolving-lite
 
 # 2. Run setup (configures hook paths for your machine)
-cd ~/.claude-plugins/evolving-lite && bash setup.sh
+bash ~/.claude/skills/evolving-lite/setup.sh
 
-# 3. Register (add to ~/.claude/settings.json under "pluginDirectories")
-```
-
-```json
-{
-  "pluginDirectories": [
-    "~/.claude-plugins/evolving-lite"
-  ]
-}
-```
-
-```bash
 # 3. Start Claude Code
 claude
 ```
+
+Three steps, no API key, no build step. Confirm it loaded with `claude plugin list`:
+
+```
+evolving-lite@skills-dir   Status: ✔ loaded
+```
+
+If `~/.claude/skills/` did not exist before step 1, restart Claude Code once so it
+starts watching the new directory. If it already existed, the plugin is picked up in
+the session you are in.
 
 On first start:
 
@@ -269,9 +267,9 @@ Evolving Lite is the foundation. Each layer above is optional, free, and strengt
 | Tool | What it adds | Install |
 |------|-------------|---------|
 | [**Kairn**](https://github.com/kairn-ai/kairn) | Semantic memory search - "How did I solve the auth problem?" works even when you used different words | `pip install kairn-ai` |
-| [**PrimeLine Skills**](https://github.com/primeline-ai/primeline-skills) | 5 workflow skills: debugging (ACH method), delegation scoring, TDD planning, code review, config architecture | `git clone` + pluginDirectories |
+| [**PrimeLine Skills**](https://github.com/primeline-ai/primeline-skills) | 5 workflow skills: debugging (ACH method), delegation scoring, TDD planning, code review, config architecture | `git clone` into `~/.claude/skills/` |
 | [**UPF**](https://github.com/primeline-ai/universal-planning-framework) | 3-stage planning with adversarial hardening - 21 anti-patterns, 6 adversarial perspectives, kill criteria | `git clone` or `curl` one-liner |
-| [**Quantum Lens**](https://github.com/primeline-ai/quantum-lens) | 7 cognitive lenses with anti-convergence - analysis that structurally can't groupthink | `git clone` + pluginDirectories |
+| [**Quantum Lens**](https://github.com/primeline-ai/quantum-lens) | 7 cognitive lenses with anti-convergence - analysis that structurally can't groupthink | `git clone` into `~/.claude/skills/` |
 
 **Without Kairn:** keyword-based memory matching (~60% recall). **With Kairn:** semantic understanding (~90% recall), cross-project knowledge, natural language search.
 
@@ -327,18 +325,18 @@ After a month: ~50-200 experience files (~0.2MB). Auto-archival cleans up contin
 <details>
 <summary><strong>Can I go back to vanilla Claude Code?</strong></summary>
 
-Anytime. Remove the line from `pluginDirectories` in settings.json. Your experiences stay as JSON files - keep them for later or delete the folder for clean removal.
+Anytime. Delete `~/.claude/skills/evolving-lite`. Your experiences stay as JSON files inside that folder, so copy them out first if you want to keep them - keep them for later or delete the folder for clean removal.
 </details>
 
 ## Upgrading from Starter System
 
 If you're using [claude-code-starter-system](https://github.com/primeline-ai/claude-code-starter-system), Evolving Lite is the next step. Starter System gives you session memory and handoffs. Evolving Lite adds automated learning, self-healing, progressive activation, delegation, security, and 10 background hooks that make the system grow with you.
 
-Your existing memory files are compatible - just point `pluginDirectories` to Evolving Lite instead.
+Your existing memory files are compatible - clone Evolving Lite into `~/.claude/skills/` and remove the Starter System folder.
 
 ## Uninstall
 
-Remove the plugin path from `pluginDirectories` in `~/.claude/settings.json`. Done. Your memory data stays in the plugin directory - delete it for clean removal, or keep it if you might come back.
+Delete `~/.claude/skills/evolving-lite`. Done. Your memory data lives inside that folder, so move it elsewhere first if you might come back.
 
 ## License
 
