@@ -353,7 +353,20 @@ def _run_sentinel(root: Path) -> dict:
     )
     out = proc.stdout.strip()
     assert out, f"health-sentinel produced no output (rc={proc.returncode}): {proc.stderr[:300]}"
-    return json.loads(out.splitlines()[0])
+    # Take the first line that actually parses, not blindly line 0. Git Bash on
+    # Windows can put a line ahead of the hook's own output, and assuming the
+    # JSON is first turned that into an opaque JSONDecodeError on two CI legs.
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    raise AssertionError(
+        f"no JSON line in health-sentinel output (rc={proc.returncode}):\n"
+        f"stdout={out[:400]!r}\nstderr={proc.stderr[:300]!r}"
+    )
 
 
 @pytest.mark.skipif(not PREWARMED_SRC.exists(), reason="no prewarmed seeds in tree")
