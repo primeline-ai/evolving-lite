@@ -483,3 +483,87 @@ def test_both_prompt_writers_use_the_shared_redactor():
             f"{path.name} carries its own credential patterns - they belong in "
             "content-scanner.py only"
         )
+
+
+# --------------------------------------------------------------------------
+# Same-second id collision (#2591)
+#
+# The id was `exp-{%Y%m%d-%H%M%S}` with no collision handling, so two
+# experiences created inside the same second landed on the same filename and the
+# second silently replaced the first. Hit twice while running an EPT for the
+# payload fix: two prompts back-to-back produced ONE file. Reachable in
+# production now that the detector actually fires.
+# --------------------------------------------------------------------------
+
+SECOND_CORRECTION = "You keep forgetting to run the migrations before the tests"
+
+
+def test_two_corrections_in_the_same_second_both_survive(tmp_path):
+    root = _plugin_root(tmp_path, session_count=5)
+
+    _run_detector(root, {"prompt": CORRECTION})
+    _run_detector(root, {"prompt": SECOND_CORRECTION})
+
+    saved = _saved(root)
+    assert len(saved) == 2, (
+        f"expected 2 experiences, found {len(saved)} - a same-second id "
+        "collision overwrote one of them"
+    )
+
+    solutions = " ".join(json.loads(p.read_text())["solution"] for p in saved)
+    assert CORRECTION in solutions, "the FIRST correction is the one that gets lost"
+    assert SECOND_CORRECTION in solutions
+
+    # The id inside the file must match its own filename, or every consumer that
+    # joins the two disagrees.
+    for path in saved:
+        assert json.loads(path.read_text())["id"] == path.stem
+
+
+def test_ten_in_the_same_second_all_survive(tmp_path):
+    """The suffix has to keep counting, not just handle one duplicate."""
+    root = _plugin_root(tmp_path, session_count=5)
+    for i in range(10):
+        _run_detector(root, {"prompt": f"You keep forgetting step number {i} of the release"})
+    assert len(_saved(root)) == 10
+
+
+def test_ids_are_unique_and_filenames_match(tmp_path):
+    root = _plugin_root(tmp_path, session_count=5)
+    for i in range(5):
+        _run_detector(root, {"prompt": f"You keep forgetting to check thing {i} first"})
+    ids = [json.loads(p.read_text())["id"] for p in _saved(root)]
+    assert len(set(ids)) == len(ids), f"duplicate ids: {ids}"
+
+
+def test_the_first_id_of_a_second_is_unsuffixed(tmp_path):
+    """Backwards compatibility: a single write keeps the historical shape, so
+    existing files and any human reading a directory listing still see
+    `exp-YYYYmmdd-HHMMSS.json`."""
+    root = _plugin_root(tmp_path, session_count=5)
+    _run_detector(root, {"prompt": CORRECTION})
+    name = _saved(root)[0].stem
+    assert name.count("-") == 2, f"unexpected id shape for a lone write: {name}"
+
+
+def test_claim_is_exclusive_across_processes(tmp_path):
+    """The writers are separate PROCESSES, so a check-then-write cannot hold.
+
+    Fires several detectors concurrently and asserts none of them lost a file to
+    another's claim. A test-then-act implementation passes the sequential tests
+    above and fails this one.
+    """
+    import concurrent.futures
+
+    root = _plugin_root(tmp_path, session_count=5)
+    prompts = [f"You keep forgetting to verify item {i} before shipping" for i in range(8)]
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda p: _run_detector(root, {"prompt": p}), prompts))
+
+    saved = _saved(root)
+    assert len(saved) == 8, f"concurrent writes lost {8 - len(saved)} experience(s)"
+    ids = [json.loads(p.read_text())["id"] for p in saved]
+    assert len(set(ids)) == 8
+    # No empty placeholders left behind by a claim whose write failed.
+    assert all(p.stat().st_size > 0 for p in saved)

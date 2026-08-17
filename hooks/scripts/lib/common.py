@@ -208,6 +208,53 @@ def safe_write_text(filepath: Path, content: str) -> bool:
 # EXPERIENCE CREATION
 # ============================================================
 
+MAX_EXPERIENCES_PER_SECOND = 50
+
+
+def _claim_experience_id() -> tuple:
+    """Reserve a free experience id and its file. Returns (id, path) or (None, None).
+
+    The id was `exp-{%Y%m%d-%H%M%S}` with no collision handling, so two
+    experiences created inside the same second landed on the same filename and
+    the second silently replaced the first. Measured twice while running an EPT:
+    two prompts fed back-to-back produced one file, and the one that survived
+    was the second.
+
+    Reachable in production since correction-detector started firing - a user
+    pasting two corrections in quick succession, or two hooks writing in the
+    same second, lost one with no error and no log line.
+
+    O_CREAT|O_EXCL rather than "check then write": the writers are separate
+    PROCESSES (one Claude Code session fires many hooks), so a test-then-act
+    check can hand the same free name to two of them. Exclusive create is the
+    only claim that holds across processes. Higher timestamp precision would
+    not fix it either - it narrows the window without closing it.
+
+    The consumers all glob `exp-*.json` (thinking-recall.py:67,
+    auto-archival.py:63, health-sentinel.sh:63) and nothing parses the
+    timestamp back out of the id, so a `-2` suffix is transparent to every
+    reader.
+    """
+    EXPERIENCES_DIR.mkdir(parents=True, exist_ok=True)
+    base = f"exp-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    for n in range(1, MAX_EXPERIENCES_PER_SECOND + 1):
+        exp_id = base if n == 1 else f"{base}-{n}"
+        path = EXPERIENCES_DIR / f"{exp_id}.json"
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        except OSError:
+            return None, None
+        os.close(fd)
+        return exp_id, path
+
+    # 50 experiences in one second is not a user typing; treat it as a runaway
+    # loop and decline rather than spin.
+    return None, None
+
+
 def create_experience(
     summary: str,
     exp_type: str = "solution",
@@ -222,9 +269,9 @@ def create_experience(
     if tags is None:
         tags = []
 
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    exp_id = f"exp-{ts}"
-    exp_file = EXPERIENCES_DIR / f"{exp_id}.json"
+    exp_id, exp_file = _claim_experience_id()
+    if exp_id is None:
+        return None
 
     data = {
         "id": exp_id,
@@ -246,6 +293,15 @@ def create_experience(
         # Update evolution log
         log_evolution_event("experience_created", f"New {exp_type}: {summary[:80]}", source=source)
         return exp_file
+
+    # The id was claimed with an empty placeholder file. If the real write
+    # failed, remove it - otherwise it stays as a 0-byte experience that
+    # thinking-recall has to skip and auto-archival has to reason about, and it
+    # burns that id for the rest of the second.
+    try:
+        exp_file.unlink()
+    except OSError:
+        pass
     return None
 
 
