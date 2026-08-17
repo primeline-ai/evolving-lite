@@ -282,7 +282,7 @@ Start without extras. Add what you need when you need it.
 - **No settings.json modification.** Standard Claude Code plugin system - nothing injected.
 - **10-tier bash security.** From blocking `rm -rf /` and reverse shells to logging `npm install -g`.
 - **Sentinel verification.** Every hook writes proof it ran. Health check catches silent failures.
-- **Credentials are redacted before anything is written.** Cloud access keys, private-key blocks, bearer tokens and `api_key=`/`password=` assignments are replaced with `[REDACTED]` before a correction is stored, and the same patterns scan fetched web content. Pattern matching is not exhaustive, so treat `_memory/` as you would any other local file.
+- **Credentials are redacted before anything is written.** Both hooks that persist your prompt run it through one shared pattern set first: cloud access keys, whole private-key blocks, JWTs, bearer and basic auth, connection strings with an inline password, vendor tokens (GitHub, Slack, Google, Stripe, Twilio, GitLab, npm, DigitalOcean, SendGrid, Shopify) and `api_key=` / `password=` / `AccountKey=` style assignments. **The known gap:** a bare high-entropy string with no keyword and no vendor prefix - a naked hex or base64 key on its own - is not matched, because catching it needs entropy guessing that would also flag ordinary text. Treat `_memory/` as you would any other local file.
 - **Full transparency.** Run `/evolution` anytime. Read `_memory/` - it's all JSON and markdown.
 
 ## FAQ

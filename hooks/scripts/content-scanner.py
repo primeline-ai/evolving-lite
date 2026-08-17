@@ -36,6 +36,9 @@ sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from common import PLUGIN_ROOT, write_sentinel  # noqa: E402
 
 MAX_CONTENT_SIZE = 100_000  # 100KB hard cap before scanning
+# Lower cap for redact_secrets: its callers persist at most 200 chars, and it
+# runs inside hooks with a 10s timeout. See the note in redact_secrets().
+MAX_REDACT_SIZE = 8_000
 
 # Fragments joined at runtime so no verbatim secret token sits in this source.
 _j = lambda *parts: "".join(parts)  # noqa: E731
@@ -73,15 +76,26 @@ _INJECTION_PATTERNS = [
 # Prefixes/headers built from fragments so the source carries no live token shape.
 _SECRET_PATTERNS = [
     {"id": "secret_cloud_key", "regex": r"\b(?:" + _j("AK", "IA") + "|" + _j("AS", "IA") + r")[0-9A-Z]{16}\b", "severity": "HIGH", "category": "secret"},
-    {"id": "secret_private_key", "regex": r"-----BEGIN(?:\s+[A-Z0-9]+)?\s+" + _j("PRIVA", "TE") + r"\s+" + _j("K", "EY") + "-----", "severity": "HIGH", "category": "secret"},
+    # Spans the whole block, not just the header. Matching only the BEGIN line
+    # replaced the header and wrote the key BODY to disk - and reported
+    # "secret_private_key redacted" while doing it, so the test that checked
+    # "a pattern fired" went green on a live leak. The END line is optional
+    # because a paste is often truncated.
+    {"id": "secret_private_key", "regex": r"-----BEGIN(?:\s+[A-Z0-9]+)*\s+" + _j("PRIVA", "TE") + r"\s+" + _j("K", "EY") + r"-----[\s\S]{0,4000}?(?:-----END(?:\s+[A-Z0-9]+)*\s+" + _j("PRIVA", "TE") + r"\s+" + _j("K", "EY") + r"-----|\Z)", "severity": "HIGH", "category": "secret"},
+    {"id": "secret_putty_key", "regex": r"PuTTY-User-Key-File-\d[\s\S]{0,4000}?(?:Private-MAC:.*|\Z)", "severity": "HIGH", "category": "secret"},
     # The value class is deliberately wider than [A-Za-z0-9_-.]: a real AWS
     # secret contains "/", a real password contains "@" and "!", and base64
     # contains "+" and "=". The narrow class silently passed all three through
     # (measured 2026-08-17), which is worse than no rule because the README then
     # promises a redaction that did not happen.
-    {"id": "secret_assignment", "regex": r"(?:api[_-]?key|secret[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|password|passwd|pwd|client[_-]?secret|private[_-]?key)\s*[:=]\s*['\"]?[^\s'\"]{12,}", "severity": "HIGH", "category": "secret"},
-    {"id": "secret_bearer", "regex": r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b", "severity": "MEDIUM", "category": "secret"},
-    {"id": "secret_provider_token", "regex": r"\b" + _j("s", "k") + r"-[A-Za-z0-9]{20,}\b", "severity": "HIGH", "category": "secret"},
+    {"id": "secret_assignment", "regex": r"(?:api[_-]?key|secret[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|account[_-]?key|shared[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|session[_-]?token|password|passwd|pwd|client[_-]?secret|private[_-]?key|connection[_-]?string)\s*[:=]\s*['\"]?[^\s'\";]{12,}", "severity": "HIGH", "category": "secret"},
+    # Basic is base64(user:pass) - just as much a credential as Bearer, and it
+    # was not covered. `curl -u user:pass` too.
+    {"id": "secret_bearer", "regex": r"\b(?:Bearer|Basic)\s+[A-Za-z0-9_\-\.\+/=]{16,}", "severity": "MEDIUM", "category": "secret"},
+    {"id": "secret_curl_userpass", "regex": r"(?:^|\s)-u\s+[^\s:]+:[^\s]{4,}", "severity": "HIGH", "category": "secret"},
+    # `sk-` alone could not cross a hyphen, so every modern OpenAI/Anthropic
+    # shape (sk-proj-, sk-ant-api03-, sk-svcacct-) slipped past the {20,}.
+    {"id": "secret_provider_token", "regex": r"\b" + _j("s", "k") + r"-[A-Za-z0-9\-_]{20,}", "severity": "HIGH", "category": "secret"},
     # Vendor-prefixed tokens are self-identifying, so they are the cheapest and
     # most reliable catch available - and none of them were covered.
     {"id": "secret_vendor_token", "regex": r"\b(?:" + "|".join([
@@ -94,6 +108,14 @@ _SECRET_PATTERNS = [
         _j("glpat", "-"),              # GitLab
         _j("npm_", ""),                # npm
         _j("dop_v1_", ""),             # DigitalOcean
+        _j("github", "_pat_"),         # GitHub fine-grained PAT (NOT gh[pousr]_)
+        _j("sk", "_live_"),            # Stripe secret (underscore, not sk-)
+        _j("sk", "_test_"),
+        _j("rk", "_live_"),            # Stripe restricted
+        _j("rk", "_test_"),
+        _j("whsec", "_"),              # Stripe webhook signing secret
+        _j("SK", "[0-9a-f]{32}"),      # Twilio
+        _j("AC", "[0-9a-f]{32}"),      # Twilio account SID
     ]) + r")[A-Za-z0-9_\-\.]{10,}", "severity": "HIGH", "category": "secret"},
     # header.payload.signature - three base64url segments.
     {"id": "secret_jwt", "regex": r"\b" + _j("ey", "J") + r"[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b", "severity": "HIGH", "category": "secret"},
@@ -193,6 +215,17 @@ def redact_secrets(content: str) -> tuple:
     """
     if not content:
         return content, []
+
+    # Scanning is bounded because it runs inside a hook with a 10s timeout, and
+    # a lens measured 14.6s on a 100k dotted string - secret_conn_string is
+    # quadratic on a long run of its host class. Blowing the timeout is not a
+    # leak (the hook dies before the write) but it silently kills the capture.
+    #
+    # TRUNCATING rather than scanning-then-keeping is what makes this safe: the
+    # callers store at most the first 200 characters, so anything past the cap
+    # was never going to be persisted, and nothing unscanned can reach disk.
+    if len(content) > MAX_REDACT_SIZE:
+        content = content[:MAX_REDACT_SIZE]
 
     spans, ids = [], []
     for pat in _COMPILED:

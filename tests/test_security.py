@@ -236,6 +236,15 @@ _MUST_REDACT = [
     ("google api key", "key=" + _j("AIza", "SyD-EXAMPLE1234567890abcdefghijk")),
     ("cloud access key", "id " + _j("AK", "IA") + "IOSFODNN7EXAMPLE"),
     ("private key block", "-----BEGIN RSA " + _j("PRIVA", "TE") + " " + _j("K", "EY") + "-----\nMIIB"),
+    ("openssh private key BODY", "-----BEGIN OPENSSH " + _j("PRIVA", "TE") + " " + _j("K", "EY") + "-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAtzc2gtZW\n-----END OPENSSH " + _j("PRIVA", "TE") + " " + _j("K", "EY") + "-----"),
+    ("basic auth header", 'curl -H "Authorization: Basic ' + _j("YWRtaW46U3VwZXJT", "ZWNyZXQxMjMh") + '" https://api.x/v1'),
+    ("curl -u user:pass", "curl -u admin:" + _j("SuperSecret", "123") + " https://api.x"),
+    ("stripe secret key", _j("sk_", "live_") + "51H8xQ2eZvKYlo2C0FAKEexample0000"),
+    ("stripe restricted key", _j("rk_", "live_") + "51H8xQ2eZvKYlo2C0RestrictedKey00"),
+    ("stripe webhook secret", _j("whsec_", "abcdefghijklmnopqrstuvwxyz012345")),
+    ("openai project key", _j("sk-", "proj-") + "abcdefghijklmnopqrstuvwxyz0123456789"),
+    ("github fine-grained pat", _j("github", "_pat_") + "11AAAAAAAAabcdefghijklmnopqrstuvwxyz0123"),
+    ("azure connection string", "AccountName=x;AccountKey=" + _j("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OU", "zFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr==") + ";Endpoint=y"),
 ]
 
 # The other half of the pin. Without these a redactor that blanked everything
@@ -249,6 +258,9 @@ _MUST_NOT_REDACT = [
     ("assignment below length floor", "password = short"),
     ("code with a colon", "const key = config.get('name'): string"),
     ("install command", "npm install -g @anthropic-ai/claude-code"),
+    ("url with a port", "Open http://localhost:8080/api/health in the browser"),
+    ("docker run line", "docker run -p 5432:5432 -e POSTGRES_DB=app postgres:16"),
+    ("a file path", "Edit src/components/home/hero.tsx and fix the heading"),
 ]
 
 
@@ -274,6 +286,14 @@ _SECRET_VALUES = [
     _j("gh", "p_") + "16CharsAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     _j("AIza", "SyD-EXAMPLE1234567890abcdefghijk"),
     _j("AK", "IA") + "IOSFODNN7EXAMPLE",
+    # The key BODY, not the header. Matching only "-----BEGIN ... KEY-----"
+    # replaced the header, wrote the body, and reported success.
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAtzc2gtZW",
+    _j("YWRtaW46U3VwZXJT", "ZWNyZXQxMjMh"),
+    _j("SuperSecret", "123"),
+    "51H8xQ2eZvKYlo2C0FAKEexample0000",
+    "51H8xQ2eZvKYlo2C0RestrictedKey00",
+    _j("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OU", "zFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr=="),
 ]
 
 
@@ -292,3 +312,28 @@ def test_the_survivor_check_can_actually_fail():
     """
     haystack = "\n".join(s for _, s in _MUST_REDACT)
     assert all(v in haystack for v in _SECRET_VALUES)
+
+
+def test_redaction_is_bounded_so_the_hook_cannot_time_out():
+    """A lens measured 14.6s on a 100k dotted string - past the 10s hook
+    timeout, which silently kills the capture. Truncating is safe here because
+    the callers persist at most 200 characters."""
+    import time
+    start = time.time()
+    cs.redact_secrets("a." * 50_000)
+    assert time.time() - start < 2.0
+
+
+def test_a_bare_unkeyworded_secret_is_a_KNOWN_gap():
+    """Documented limit, asserted so it cannot be forgotten or over-claimed.
+
+    Every pattern here is keyword-gated or vendor-prefixed. A bare high-entropy
+    string with neither is NOT caught, and catching it needs entropy heuristics
+    whose false-positive cost on ordinary prompts has not been measured. The
+    README says pattern matching is not exhaustive; this is what that means.
+
+    If this test starts FAILING, entropy detection was added - update the
+    README claim in the same commit.
+    """
+    bare = "rotate this " + _j("4a7f1c9e2b8d3f0a", "6c5e1b9d2f7a4c8e3b1d6a9f0c2e4b8a")
+    assert cs.redact_secrets(bare)[1] == []
