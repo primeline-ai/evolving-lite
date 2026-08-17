@@ -64,9 +64,29 @@ def _run_detector(root: Path, payload: dict) -> tuple[int, str]:
         input=json.dumps(payload),
         capture_output=True,
         text=True,
-        env={"PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": str(root)},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "CLAUDE_PLUGIN_ROOT": str(root),
+            "EVOLVING_TMP": str(root / "_runtime"),
+        },
     )
     return proc.returncode, proc.stdout
+
+
+def _sentinel_status(root: Path) -> str | None:
+    """The status the hook recorded for its own exit path.
+
+    Needed because several distinct outcomes are indistinguishable from the
+    outside: a clean guarded skip and an unhandled exception BOTH exit 0, write
+    no file and print nothing. Asserting only on those three would pass whether
+    or not the guard exists - which is exactly what a mutation run caught this
+    test doing.
+    """
+    files = list((root / "_runtime").glob("evolving-lite-sentinel-correction-detector-*.json"))
+    if not files:
+        return None
+    newest = max(files, key=lambda p: p.stat().st_mtime)
+    return json.loads(newest.read_text()).get("status")
 
 
 def _saved(root: Path) -> list[Path]:
@@ -157,6 +177,146 @@ def test_empty_payload_is_survivable(tmp_path):
     code, _ = _run_detector(root, {})
     assert code == 0
     assert _saved(root) == []
+
+
+@pytest.mark.parametrize("bad", [True, 42, ["a", "b"], {"k": "v"}, 3.14])
+def test_non_string_prompt_is_survivable(tmp_path, bad):
+    """A truthy non-string reaches len() and raises.
+
+    The blanket `except Exception` would swallow that into a silent "error"
+    sentinel - a second way for this hook to be invisibly dead, which is the
+    exact class it was just fixed for. Guarded explicitly instead.
+    """
+    root = _plugin_root(tmp_path / str(abs(hash(str(bad)))), session_count=5)
+    code, stdout = _run_detector(root, {"prompt": bad})
+    assert code == 0
+    assert _saved(root) == []
+    assert stdout.strip() == ""
+    # The discriminator. Without the guard the TypeError from len() is swallowed
+    # by the blanket except and the status reads "error" - same exit code, same
+    # empty stdout, same absent file. Only the sentinel tells the two apart.
+    assert _sentinel_status(root) == "skip-nonstring"
+
+
+# --------------------------------------------------------------------------
+# Secret redaction
+#
+# Fixing the payload field turned a dormant no-op into a live persistence path
+# for the user's own prompt text. README.md promises "No secrets stored", and
+# content-scanner only ever ran on WebFetch/firecrawl results, so nothing stood
+# between a pasted credential and _memory/experiences/. These pin that it does
+# now - and, just as importantly, that the hook refuses to write at all if the
+# redactor cannot be loaded.
+# --------------------------------------------------------------------------
+
+# Assembled from fragments so this source carries no verbatim credential token,
+# matching the convention in content-scanner.py and test_security.py.
+_j = lambda *p: "".join(p)
+_FAKE_KEY = _j("sk", "-", "live", "51H8xQ2eZvKYlo2C0", "FAKEexample", "0000")
+_FAKE_PW = _j("hunter2", "correct", "horse", "battery")
+
+# 30 words, so it clears the >20-word bar with a single 0.85 pattern. Note this
+# is an ORDINARY instruction, not a correction - which is the point: the gate is
+# loose enough that everyday prompts reach the writer.
+SECRET_PROMPT = (
+    f"Please put STRIPE_SECRET_KEY={_FAKE_KEY} and DB_PASSWORD={_FAKE_PW} into "
+    "the deployment env file instead of hardcoding either of them inside the "
+    "config module, and make sure the staging box gets the same values too"
+)
+
+
+def test_secret_never_reaches_disk(tmp_path):
+    root = _plugin_root(tmp_path, session_count=5)
+    _run_detector(root, {"prompt": SECRET_PROMPT})
+
+    saved = _saved(root)
+    assert len(saved) == 1, "precondition: this prompt must reach the writer"
+
+    blob = saved[0].read_text()
+    assert _FAKE_KEY not in blob, "API key persisted verbatim"
+    assert _FAKE_PW not in blob, "password persisted verbatim"
+    assert "[REDACTED:" in blob
+    assert "redacted" in json.loads(blob)["tags"]
+
+
+def test_secret_never_reaches_the_analytics_log(tmp_path):
+    """create_experience() also appends summary[:80] to evolution-log.jsonl.
+
+    Redacting only the experience file would leave the same credential in a
+    second sink - the exact 'I fixed the unit I edited' shape.
+    """
+    root = _plugin_root(tmp_path, session_count=5)
+    _run_detector(root, {"prompt": SECRET_PROMPT})
+
+    log = root / "_memory" / "analytics" / "evolution-log.jsonl"
+    if log.exists():
+        text = log.read_text()
+        assert _FAKE_KEY not in text
+        assert _FAKE_PW not in text
+
+
+def test_redaction_preserves_the_surrounding_correction(tmp_path):
+    """Redaction must remove the credential, not gut the note."""
+    root = _plugin_root(tmp_path, session_count=5)
+    _run_detector(root, {"prompt": SECRET_PROMPT})
+
+    body = json.loads(_saved(root)[0].read_text())
+    assert "deployment env file" in body["solution"]
+
+
+def test_ordinary_correction_is_stored_unmodified(tmp_path):
+    """Negative control: no secret means no redaction, no tag, text intact.
+
+    Without this, a redactor that blanked every prompt would pass the tests above.
+    """
+    root = _plugin_root(tmp_path, session_count=5)
+    _run_detector(root, {"prompt": CORRECTION})
+
+    body = json.loads(_saved(root)[0].read_text())
+    assert body["solution"] == CORRECTION
+    assert "[REDACTED:" not in body["solution"]
+    assert "redacted" not in body["tags"]
+
+
+def test_write_is_refused_when_the_redactor_is_missing(tmp_path):
+    """Fail CLOSED. No redactor means no write - never an unredacted write.
+
+    Everything else in this hook fails open. This one path must not, because
+    failing open here means "the safety net is gone, so store the credential
+    anyway". The user's turn is still never blocked: exit code stays 0.
+    """
+    root = _plugin_root(tmp_path, session_count=5)
+    scanner = root / "hooks" / "scripts" / "content-scanner.py"
+    scanner.rename(scanner.with_suffix(".py.disabled"))
+
+    code, stdout = _run_detector(root, {"prompt": SECRET_PROMPT})
+
+    assert code == 0, "must not block the user's turn"
+    assert _saved(root) == [], "wrote an experience with no redactor available"
+    assert stdout.strip() == ""
+    assert _sentinel_status(root) == "skip-no-redactor"
+
+
+def test_sentinel_reader_sees_a_healthy_run(tmp_path):
+    """Positive control for _sentinel_status().
+
+    The two guard tests above assert a specific sentinel value. If the reader
+    silently returned None for everything they would both pass vacuously, so
+    prove the reader reports a real, different status on the happy path.
+    """
+    root = _plugin_root(tmp_path, session_count=5)
+    _run_detector(root, {"prompt": CORRECTION})
+    assert _sentinel_status(root) == "detected"
+
+
+def test_redactor_is_the_scanner_s_own_pattern_list(tmp_path):
+    """One source of truth. If someone hand-copies the patterns into the
+    detector, this stops pointing at the shared list and the two drift."""
+    detector = (REPO / "hooks" / "scripts" / "correction-detector.py").read_text()
+    assert "content-scanner.py" in detector
+    assert "_SECRET_PATTERNS" not in detector, (
+        "credential patterns must live in content-scanner.py only"
+    )
 
 
 # --------------------------------------------------------------------------

@@ -149,6 +149,58 @@ def actionable(matches: list) -> list:
     return [m for m in matches if not m["in_code_fence"] and not m["in_quote"]]
 
 
+def redact_secrets(content: str) -> tuple:
+    """Replace credential-shaped spans with [REDACTED:<id>]. Public API.
+
+    Returns (redacted_text, [pattern_id, ...]).
+
+    Used by correction-detector before an experience is written to disk. That
+    hook persists the user's own prompt text, and this scanner only ever ran on
+    WebFetch/firecrawl results, so nothing stood between a pasted key and
+    `_memory/experiences/`. One pattern list, two consumers - a hand-copied
+    second list is how these drift apart.
+
+    Deliberately narrower AND blunter than scan_text():
+
+    - Secret patterns only. Injection patterns describe text that is dangerous
+      to OBEY, not dangerous to STORE, and redacting them would corrupt a
+      legitimate correction about prompt injection.
+    - No fence/quote suppression. `actionable()` forgives a credential inside a
+      code fence because quoting one in fetched documentation is not a leak.
+      Writing one to disk is, fenced or not.
+    """
+    if not content:
+        return content, []
+
+    spans, ids = [], []
+    for pat in _COMPILED:
+        if pat["category"] != "secret":
+            continue
+        for m in pat["regex"].finditer(content):
+            spans.append((m.start(), m.end(), pat["id"]))
+
+    if not spans:
+        return content, []
+
+    # Right-to-left so earlier offsets stay valid, and skip any span already
+    # covered by a wider replacement (patterns legitimately overlap: a bearer
+    # token is also an assignment value).
+    spans.sort(key=lambda s: (s[0], -s[1]))
+    merged = []
+    for start, end, pid in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end), merged[-1][2])
+            continue
+        merged.append((start, end, pid))
+
+    out = content
+    for start, end, pid in reversed(merged):
+        out = out[:start] + f"[REDACTED:{pid}]" + out[end:]
+        ids.append(pid)
+
+    return out, sorted(set(ids))
+
+
 def extract_text(tool_name: str, result) -> tuple:
     """Pull scannable text + a source label out of a tool result."""
     if isinstance(result, list):

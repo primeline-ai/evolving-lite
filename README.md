@@ -282,7 +282,7 @@ Start without extras. Add what you need when you need it.
 - **No settings.json modification.** Standard Claude Code plugin system - nothing injected.
 - **10-tier bash security.** From blocking `rm -rf /` and reverse shells to logging `npm install -g`.
 - **Sentinel verification.** Every hook writes proof it ran. Health check catches silent failures.
-- **No secrets stored.** Content scanner skips API keys, passwords, and credentials.
+- **Credentials are redacted before anything is written.** Cloud access keys, private-key blocks, bearer tokens and `api_key=`/`password=` assignments are replaced with `[REDACTED]` before a correction is stored, and the same patterns scan fetched web content. Pattern matching is not exhaustive, so treat `_memory/` as you would any other local file.
 - **Full transparency.** Run `/evolution` anytime. Read `_memory/` - it's all JSON and markdown.
 
 ## FAQ
@@ -290,7 +290,7 @@ Start without extras. Add what you need when you need it.
 <details>
 <summary><strong>Does this slow down Claude Code?</strong></summary>
 
-Every hook has a 10-second timeout. If a hook takes longer, it's skipped - never blocks. Most hooks complete in 20-50ms. You won't notice a difference.
+Every hook has a timeout - 10 seconds for most, 15 for the heavier session-start checks. If a hook takes longer, it's skipped rather than blocking you. Most complete in 20-50ms.
 </details>
 
 <details>

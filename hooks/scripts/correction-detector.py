@@ -26,6 +26,30 @@ from common import (
     create_experience, read_hook_input
 )
 
+
+def _load_redactor():
+    """Import redact_secrets() from content-scanner.py (hyphen, so importlib).
+
+    ONE pattern list, two consumers. A hand-copied second copy of the credential
+    patterns is exactly how two lists drift into disagreeing about what a secret
+    is, and the one that drifts is always the one nobody tests.
+
+    Returns None if the scanner cannot be loaded. The caller then declines to
+    WRITE, rather than writing unredacted - this is the one path in this hook
+    that fails closed. Fail-open here would mean "the safety net is missing, so
+    store the credential anyway", which is the opposite of a safety net. The
+    user's turn is never blocked either way.
+    """
+    try:
+        import importlib.util
+        path = Path(__file__).parent / "content-scanner.py"
+        spec = importlib.util.spec_from_file_location("_cs_redactor", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.redact_secrets
+    except Exception:
+        return None
+
 # Detection patterns with weights (all 8 from Evolving)
 PATTERNS = {
     "repeated_mistake": {
@@ -173,6 +197,13 @@ def main():
                       or hook_input.get("content")
                       or hook_input.get("message", ""))
 
+        # A truthy non-string (True, 42, a list) reaches len() and raises, which
+        # the blanket except below would swallow into a silent "error" sentinel -
+        # a second way for this hook to be invisibly dead.
+        if not isinstance(user_input, str):
+            write_sentinel("correction-detector", "skip-nonstring")
+            sys.exit(0)
+
         if not user_input or len(user_input) < 3:
             write_sentinel("correction-detector", "skip-short")
             sys.exit(0)
@@ -191,12 +222,29 @@ def main():
         # Create experience if meaningful
         if should_create_experience(patterns, user_input):
             pattern_names = [p["type"].replace("_", " ") for p in patterns]
+
+            # Redact BEFORE truncating. The stored text is the user's own prompt
+            # verbatim, this file is the only thing between a pasted credential
+            # and a permanent file on disk, and truncating first would leave the
+            # tail of a key sitting in plain text inside the 200-char window.
+            redact_secrets = _load_redactor()
+            if redact_secrets is None:
+                write_sentinel("correction-detector", "skip-no-redactor")
+                sys.exit(0)
+
+            safe_input, redacted_ids = redact_secrets(user_input)
+            tags = ["correction", "auto-logged", category] + [
+                p["type"].replace("_", "-") for p in patterns[:2]
+            ]
+            if redacted_ids:
+                tags.append("redacted")
+
             create_experience(
-                summary=f"User correction [{category}]: {user_input[:80].strip()}",
+                summary=f"User correction [{category}]: {safe_input[:80].strip()}",
                 exp_type="gotcha",
-                tags=["correction", "auto-logged", category] + [p["type"].replace("_", "-") for p in patterns[:2]],
+                tags=tags,
                 problem="Claude made an error that the user corrected",
-                solution=user_input[:200],
+                solution=safe_input[:200],
                 root_cause=f"Detected patterns: {', '.join(pattern_names)}",
                 confidence=confidence / 100,
                 source="correction-detector"
