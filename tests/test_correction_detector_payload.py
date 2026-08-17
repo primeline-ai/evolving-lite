@@ -483,3 +483,228 @@ def test_both_prompt_writers_use_the_shared_redactor():
             f"{path.name} carries its own credential patterns - they belong in "
             "content-scanner.py only"
         )
+
+
+# --------------------------------------------------------------------------
+# Same-second id collision (#2591)
+#
+# The id was `exp-{%Y%m%d-%H%M%S}` with no collision handling, so two
+# experiences created inside the same second landed on the same filename and the
+# second silently replaced the first. Hit twice while running an EPT for the
+# payload fix: two prompts back-to-back produced ONE file. Reachable in
+# production now that the detector actually fires.
+# --------------------------------------------------------------------------
+
+SECOND_CORRECTION = "You keep forgetting to run the migrations before the tests"
+
+
+def _assert_same_second(saved: list) -> None:
+    """Prove the run actually exercised a collision.
+
+    Every reviewer of this file made the same point independently: two
+    subprocess launches can straddle a second boundary, and then they get
+    DIFFERENT base ids and the assertion below holds for a naive
+    check-then-write implementation too. A test that only probably tests the
+    thing is not a test - so fail loudly when the window was missed, rather
+    than passing for the wrong reason.
+    """
+    bases = {p.stem.split("-")[1] + p.stem.split("-")[2] for p in saved}
+    assert len(bases) == 1, (
+        f"the writes straddled a second boundary ({sorted(bases)}), so no "
+        "collision was exercised - re-run; this is not a product failure"
+    )
+
+
+def test_two_corrections_in_the_same_second_both_survive(tmp_path):
+    root = _plugin_root(tmp_path, session_count=5)
+
+    _run_detector(root, {"prompt": CORRECTION})
+    _run_detector(root, {"prompt": SECOND_CORRECTION})
+
+    saved = _saved(root)
+    _assert_same_second(saved)
+    assert len(saved) == 2, (
+        f"expected 2 experiences, found {len(saved)} - a same-second id "
+        "collision overwrote one of them"
+    )
+
+    solutions = " ".join(json.loads(p.read_text())["solution"] for p in saved)
+    assert CORRECTION in solutions, "the FIRST correction is the one that gets lost"
+    assert SECOND_CORRECTION in solutions
+
+    # The id inside the file must match its own filename, or every consumer that
+    # joins the two disagrees.
+    for path in saved:
+        assert json.loads(path.read_text())["id"] == path.stem
+
+
+def _load_common(root: Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        f"common_{root.parent.name}", root / "hooks" / "scripts" / "lib" / "common.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_ten_in_the_same_second_all_survive(tmp_path, monkeypatch):
+    """The suffix ladder has to keep counting, not just handle one duplicate.
+
+    FROZEN CLOCK, not ten subprocess launches. The subprocess version of this
+    test straddled a second boundary on its first run - which meant it had been
+    asserting "10 files exist" while the writes were in DIFFERENT seconds, so it
+    would have passed on an implementation with no collision handling at all.
+    A reviewer predicted exactly this; the same-second assertion caught it.
+    """
+    root = _plugin_root(tmp_path, session_count=5)
+    common = _load_common(root)
+
+    class _Frozen:
+        @staticmethod
+        def now():
+            import datetime as _dt
+            return _dt.datetime(2026, 8, 17, 21, 30, 0)
+
+    monkeypatch.setattr(common, "datetime", _Frozen)
+
+    for i in range(10):
+        assert common.create_experience(summary=f"note {i}", source="t") is not None
+
+    saved = _saved(root)
+    assert len(saved) == 10, f"suffix ladder stopped early: {[p.name for p in saved]}"
+    names = {p.stem for p in saved}
+    assert "exp-20260817-213000" in names, "the first of a second must be unsuffixed"
+    assert "exp-20260817-213000-10" in names, "the ladder must reach 10"
+
+
+def test_the_ladder_declines_past_the_cap(tmp_path, monkeypatch):
+    """At the cap it must decline, not spin or overwrite."""
+    root = _plugin_root(tmp_path, session_count=5)
+    common = _load_common(root)
+
+    class _Frozen:
+        @staticmethod
+        def now():
+            import datetime as _dt
+            return _dt.datetime(2026, 8, 17, 21, 31, 0)
+
+    monkeypatch.setattr(common, "datetime", _Frozen)
+    monkeypatch.setattr(common, "MAX_EXPERIENCES_PER_SECOND", 3)
+
+    made = [common.create_experience(summary=f"n{i}", source="t") for i in range(5)]
+    assert sum(x is not None for x in made) == 3
+    assert made[3] is None and made[4] is None
+    assert len(_saved(root)) == 3, "declining must not overwrite an earlier file"
+
+
+def test_ids_are_unique_and_filenames_match(tmp_path):
+    root = _plugin_root(tmp_path, session_count=5)
+    for i in range(5):
+        _run_detector(root, {"prompt": f"You keep forgetting to check thing {i} first"})
+    ids = [json.loads(p.read_text())["id"] for p in _saved(root)]
+    assert len(set(ids)) == len(ids), f"duplicate ids: {ids}"
+
+
+def test_the_first_id_of_a_second_is_unsuffixed(tmp_path):
+    """Backwards compatibility: a single write keeps the historical shape, so
+    existing files and any human reading a directory listing still see
+    `exp-YYYYmmdd-HHMMSS.json`."""
+    root = _plugin_root(tmp_path, session_count=5)
+    _run_detector(root, {"prompt": CORRECTION})
+    name = _saved(root)[0].stem
+    assert name.count("-") == 2, f"unexpected id shape for a lone write: {name}"
+
+
+def test_claim_is_exclusive_across_processes(tmp_path):
+    """The writers are separate PROCESSES, so a check-then-write cannot hold.
+
+    Fires several detectors concurrently and asserts none of them lost a file to
+    another's claim. A test-then-act implementation passes the sequential tests
+    above and fails this one.
+    """
+    import concurrent.futures
+
+    root = _plugin_root(tmp_path, session_count=5)
+    prompts = [f"You keep forgetting to verify item {i} before shipping" for i in range(8)]
+
+    # A start BARRIER, not just a pool: without it the 8 subprocesses each pay
+    # interpreter startup and can drift across a second boundary, at which point
+    # they take different base ids and a naive check-then-write implementation
+    # passes too. Every reviewer raised this independently.
+    import threading
+    barrier = threading.Barrier(8)
+
+    def _fire(prompt):
+        barrier.wait(timeout=30)
+        return _run_detector(root, {"prompt": prompt})
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(_fire, prompts))
+
+    saved = _saved(root)
+    assert len(saved) == 8, f"concurrent writes lost {8 - len(saved)} experience(s)"
+    _assert_same_second(saved)
+    ids = [json.loads(p.read_text())["id"] for p in saved]
+    assert len(set(ids)) == 8
+    # No empty placeholders left behind by a claim whose write failed.
+    assert all(p.stat().st_size > 0 for p in saved)
+
+
+def test_a_failed_write_leaves_no_empty_experience_behind(tmp_path, monkeypatch):
+    """The claim publishes a real, glob-visible exp-*.json before the content
+    lands. All three reviewers converged on this: if anything between the claim
+    and the write does not raise OSError - a kill inside the 10-15s hook
+    timeout, or a UnicodeEncodeError that safe_write_json does not catch - the
+    0-byte file stays forever. integrity-checker FAILs on it, health-sentinel
+    counts it, and auto-archival can never reclaim it.
+
+    Before the collision fix a failure left nothing at all, so this is a
+    regression the fix itself introduced.
+    """
+    import importlib.util
+    root = _plugin_root(tmp_path, session_count=5)
+
+    spec = importlib.util.spec_from_file_location(
+        "common_under_test", root / "hooks" / "scripts" / "lib" / "common.py"
+    )
+    common = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(common)
+
+    def _boom(*_a, **_kw):
+        raise UnicodeEncodeError("utf-8", "x", 0, 1, "surrogates not allowed")
+
+    monkeypatch.setattr(common, "safe_write_json", _boom)
+
+    with pytest.raises(UnicodeEncodeError):
+        common.create_experience(summary="a correction", source="correction-detector")
+
+    leftovers = list((root / "_memory" / "experiences").glob("exp-*.json"))
+    assert leftovers == [], f"claim leaked a placeholder: {[p.name for p in leftovers]}"
+
+
+def test_a_declined_claim_is_logged_not_silent(tmp_path):
+    """Both decline paths return None and the caller discards it, so without a
+    log line the experience vanishes while the user sees CORRECTION DETECTED
+    and the sentinel reads healthy - the exact silent-loss class this fix is
+    about, one level up."""
+    import importlib.util
+    root = _plugin_root(tmp_path, session_count=5)
+
+    spec = importlib.util.spec_from_file_location(
+        "common_decline", root / "hooks" / "scripts" / "lib" / "common.py"
+    )
+    common = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(common)
+
+    monkeypatch_cap = common.MAX_EXPERIENCES_PER_SECOND
+    common.MAX_EXPERIENCES_PER_SECOND = 1
+    try:
+        assert common.create_experience(summary="first", source="t") is not None
+        assert common.create_experience(summary="second", source="t") is None
+    finally:
+        common.MAX_EXPERIENCES_PER_SECOND = monkeypatch_cap
+
+    log = root / "_memory" / "analytics" / "evolution-log.jsonl"
+    assert log.exists(), "no evolution log at all"
+    assert "experience_dropped" in log.read_text(), "the drop was silent"

@@ -208,6 +208,71 @@ def safe_write_text(filepath: Path, content: str) -> bool:
 # EXPERIENCE CREATION
 # ============================================================
 
+MAX_EXPERIENCES_PER_SECOND = 50
+
+
+def _claim_experience_id() -> tuple:
+    """Reserve a free experience id and its file. Returns (id, path) or (None, None).
+
+    The id was `exp-{%Y%m%d-%H%M%S}` with no collision handling, so two
+    experiences created inside the same second landed on the same filename and
+    the second silently replaced the first. Measured twice while running an EPT:
+    two prompts fed back-to-back produced one file, and the one that survived
+    was the second.
+
+    Reachable in production since correction-detector started firing - a user
+    pasting two corrections in quick succession, or two hooks writing in the
+    same second, lost one with no error and no log line.
+
+    O_CREAT|O_EXCL rather than "check then write": the writers are separate
+    PROCESSES (one Claude Code session fires many hooks), so a test-then-act
+    check can hand the same free name to two of them. Exclusive create is the
+    only claim that holds across processes. Higher timestamp precision would
+    not fix it either - it narrows the window without closing it.
+
+    HONEST LIMIT, because two reviewers called the first wording overstated:
+    O_EXCL is atomic on local filesystems (APFS, ext4, NTFS). It is NOT
+    guaranteed on NFS, SMB, or userspace-synced folders (iCloud Drive, Dropbox,
+    OneDrive), where two machines can each believe they created the file. A
+    plugin installed into a synced directory therefore keeps a narrow race that
+    this cannot close - that needs a lock server, not a flag.
+
+    The consumers all glob `exp-*.json` (thinking-recall.py:67,
+    auto-archival.py:63, health-sentinel.sh:63) and nothing parses the
+    timestamp back out of the id, so a `-2` suffix is transparent to every
+    reader.
+    """
+    EXPERIENCES_DIR.mkdir(parents=True, exist_ok=True)
+    base = f"exp-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    for n in range(1, MAX_EXPERIENCES_PER_SECOND + 1):
+        exp_id = base if n == 1 else f"{base}-{n}"
+        path = EXPERIENCES_DIR / f"{exp_id}.json"
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            continue
+        except OSError:
+            log_evolution_event(
+                "experience_dropped",
+                "could not claim an experience id (directory not writable?)",
+                source="create_experience",
+            )
+            return None, None
+        os.close(fd)
+        return exp_id, path
+
+    # 50 experiences in one second is not a user typing; treat it as a runaway
+    # loop and decline rather than spin. Logged, because a silent drop is the
+    # same failure class this function exists to remove.
+    log_evolution_event(
+        "experience_dropped",
+        f"more than {MAX_EXPERIENCES_PER_SECOND} experiences in one second",
+        source="create_experience",
+    )
+    return None, None
+
+
 def create_experience(
     summary: str,
     exp_type: str = "solution",
@@ -222,9 +287,9 @@ def create_experience(
     if tags is None:
         tags = []
 
-    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    exp_id = f"exp-{ts}"
-    exp_file = EXPERIENCES_DIR / f"{exp_id}.json"
+    exp_id, exp_file = _claim_experience_id()
+    if exp_id is None:
+        return None
 
     data = {
         "id": exp_id,
@@ -242,11 +307,38 @@ def create_experience(
         "claude_code_version": os.environ.get("CLAUDE_CODE_VERSION", "unknown")
     }
 
-    if safe_write_json(exp_file, data):
-        # Update evolution log
-        log_evolution_event("experience_created", f"New {exp_type}: {summary[:80]}", source=source)
-        return exp_file
+    # The claim publishes a real, glob-visible `exp-*.json`. Until the content
+    # lands it is a 0-byte file that integrity-checker reports as a FAIL,
+    # health-sentinel counts, and auto-archival can never reclaim (it bails on
+    # unreadable JSON) - so anything that leaves this block without writing must
+    # remove it.
+    #
+    # BaseException, not Exception: safe_write_json only catches OSError, so a
+    # UnicodeEncodeError from a lone surrogate in the prompt would sail past it,
+    # and hooks run under a 10-15s timeout where the process can be killed.
+    # Before this change a failure left nothing behind at all; it must not now
+    # leave litter.
+    try:
+        if safe_write_json(exp_file, data):
+            log_evolution_event(
+                "experience_created", f"New {exp_type}: {summary[:80]}", source=source
+            )
+            return exp_file
+    except BaseException:
+        _discard_claim(exp_file)
+        raise
+
+    _discard_claim(exp_file)
     return None
+
+
+def _discard_claim(exp_file: Path) -> None:
+    """Remove a claimed-but-unwritten experience file, best effort."""
+    try:
+        if exp_file.exists() and exp_file.stat().st_size == 0:
+            exp_file.unlink()
+    except OSError:
+        pass
 
 
 # ============================================================
