@@ -12,6 +12,12 @@ if [[ ! -f "${PLUGIN_ROOT}/.claude-plugin/plugin.json" ]]; then
   exit 0
 fi
 
+# Version comes from the manifest, never a second hardcoded copy. The banner
+# said v1.0 while plugin.json, the README badge and CHANGELOG all said 1.1.0.
+version=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "${PLUGIN_ROOT}/.claude-plugin/plugin.json" 2>/dev/null | head -1)
+[[ -z "$version" ]] && version="unknown"
+
 # Ensure memory directories exist
 mkdir -p "${PLUGIN_ROOT}/_memory/experiences" "${PLUGIN_ROOT}/_memory/analytics" "${PLUGIN_ROOT}/_memory/sessions" "${PLUGIN_ROOT}/_memory/projects" 2>/dev/null
 
@@ -48,20 +54,18 @@ elif [[ "$session_count" -ge 3 ]]; then
   tier_label="Learning"
 fi
 
-# Count experiences
-exp_count=0
+# Count experiences.
+# The find below is recursive, so it already covers _prewarmed/exp-pw-*.json
+# (they match exp-*.json). Adding a separate prewarmed count double-counted
+# every seed and reported 40 on a stock install that holds 20.
+total_exp=0
 if [[ -d "${PLUGIN_ROOT}/_memory/experiences" ]]; then
-  exp_count=$(find "${PLUGIN_ROOT}/_memory/experiences" -name "exp-*.json" 2>/dev/null | wc -l | tr -cd '0-9')
+  total_exp=$(find "${PLUGIN_ROOT}/_memory/experiences" -name "exp-*.json" 2>/dev/null | wc -l | tr -cd '0-9')
 fi
-pw_count=0
-if [[ -d "${PLUGIN_ROOT}/_memory/experiences/_prewarmed" ]]; then
-  pw_count=$(find "${PLUGIN_ROOT}/_memory/experiences/_prewarmed" -name "exp-pw-*.json" 2>/dev/null | wc -l | tr -cd '0-9')
-fi
-total_exp=$((exp_count + pw_count))
 
 # Write sentinel
 sentinel_file="${RUNTIME_DIR}/evolving-lite-sentinel-health-${session_id}.json"
 echo "{\"hook\":\"health-sentinel\",\"ts\":$(date +%s),\"status\":\"ok\",\"session\":\"${session_id}\"}" > "$sentinel_file" 2>/dev/null
 
-echo "{\"systemMessage\": \"Evolving Lite v1.0 | Session ${session_count} | Tier ${tier} (${tier_label}) | ${total_exp} experiences\", \"continue\": true}"
+echo "{\"systemMessage\": \"Evolving Lite v${version} | Session ${session_count} | Tier ${tier} (${tier_label}) | ${total_exp} experiences\", \"continue\": true}"
 exit 0

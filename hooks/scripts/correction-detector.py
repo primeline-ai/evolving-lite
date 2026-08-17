@@ -23,7 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from common import (
     write_sentinel, is_tier_active,
-    create_experience, read_hook_input
+    create_experience, read_hook_input, load_redactor
 )
 
 # Detection patterns with weights (all 8 from Evolving)
@@ -166,7 +166,19 @@ def main():
             sys.exit(0)
 
         hook_input = read_hook_input()
-        user_input = hook_input.get("content", hook_input.get("message", ""))
+        # CC's UserPromptSubmit payload carries the text in "prompt";
+        # "content"/"message" kept as fallbacks for older payload shapes.
+        # Reading only content/message made this hook a no-op in production.
+        user_input = (hook_input.get("prompt")
+                      or hook_input.get("content")
+                      or hook_input.get("message", ""))
+
+        # A truthy non-string (True, 42, a list) reaches len() and raises, which
+        # the blanket except below would swallow into a silent "error" sentinel -
+        # a second way for this hook to be invisibly dead.
+        if not isinstance(user_input, str):
+            write_sentinel("correction-detector", "skip-nonstring")
+            sys.exit(0)
 
         if not user_input or len(user_input) < 3:
             write_sentinel("correction-detector", "skip-short")
@@ -186,12 +198,29 @@ def main():
         # Create experience if meaningful
         if should_create_experience(patterns, user_input):
             pattern_names = [p["type"].replace("_", " ") for p in patterns]
+
+            # Redact BEFORE truncating. The stored text is the user's own prompt
+            # verbatim, this file is the only thing between a pasted credential
+            # and a permanent file on disk, and truncating first would leave the
+            # tail of a key sitting in plain text inside the 200-char window.
+            redact_secrets = load_redactor()
+            if redact_secrets is None:
+                write_sentinel("correction-detector", "skip-no-redactor")
+                sys.exit(0)
+
+            safe_input, redacted_ids = redact_secrets(user_input)
+            tags = ["correction", "auto-logged", category] + [
+                p["type"].replace("_", "-") for p in patterns[:2]
+            ]
+            if redacted_ids:
+                tags.append("redacted")
+
             create_experience(
-                summary=f"User correction [{category}]: {user_input[:80].strip()}",
+                summary=f"User correction [{category}]: {safe_input[:80].strip()}",
                 exp_type="gotcha",
-                tags=["correction", "auto-logged", category] + [p["type"].replace("_", "-") for p in patterns[:2]],
+                tags=tags,
                 problem="Claude made an error that the user corrected",
-                solution=user_input[:200],
+                solution=safe_input[:200],
                 root_cause=f"Detected patterns: {', '.join(pattern_names)}",
                 confidence=confidence / 100,
                 source="correction-detector"

@@ -301,6 +301,34 @@ def ensure_memory_initialized() -> bool:
 # HOOK STDIN PARSING
 # ============================================================
 
+def load_redactor():
+    """Import redact_secrets() from content-scanner.py (hyphen, so importlib).
+
+    Lives here because TWO hooks persist the user's raw prompt on the same
+    UserPromptSubmit event - correction-detector (into an experience) and
+    delegation-enforcer (into the pending marker, which drains into
+    delegation-gaps.jsonl). Redacting only the one you happened to be editing
+    leaves the credential in the other sink.
+
+    ONE pattern list, in content-scanner.py. A hand-copied second copy is how
+    two definitions of "secret" drift apart, and the one that drifts is always
+    the one nobody tests.
+
+    Returns None if the scanner cannot be loaded. Callers must then decline to
+    persist the prompt text - never persist it unredacted. That is the one place
+    these hooks fail closed; the session itself is never blocked.
+    """
+    try:
+        import importlib.util
+        path = Path(__file__).resolve().parent.parent / "content-scanner.py"
+        spec = importlib.util.spec_from_file_location("_cs_redactor", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.redact_secrets
+    except Exception:
+        return None
+
+
 def read_hook_input() -> dict:
     """Read and parse JSON input from Claude Code hook system."""
     try:
