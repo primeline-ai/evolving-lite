@@ -74,9 +74,31 @@ _INJECTION_PATTERNS = [
 _SECRET_PATTERNS = [
     {"id": "secret_cloud_key", "regex": r"\b(?:" + _j("AK", "IA") + "|" + _j("AS", "IA") + r")[0-9A-Z]{16}\b", "severity": "HIGH", "category": "secret"},
     {"id": "secret_private_key", "regex": r"-----BEGIN(?:\s+[A-Z0-9]+)?\s+" + _j("PRIVA", "TE") + r"\s+" + _j("K", "EY") + "-----", "severity": "HIGH", "category": "secret"},
-    {"id": "secret_assignment", "regex": r"(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|client[_-]?secret)\s*[:=]\s*['\"]?[A-Za-z0-9_\-\.]{16,}", "severity": "HIGH", "category": "secret"},
+    # The value class is deliberately wider than [A-Za-z0-9_-.]: a real AWS
+    # secret contains "/", a real password contains "@" and "!", and base64
+    # contains "+" and "=". The narrow class silently passed all three through
+    # (measured 2026-08-17), which is worse than no rule because the README then
+    # promises a redaction that did not happen.
+    {"id": "secret_assignment", "regex": r"(?:api[_-]?key|secret[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|password|passwd|pwd|client[_-]?secret|private[_-]?key)\s*[:=]\s*['\"]?[^\s'\"]{12,}", "severity": "HIGH", "category": "secret"},
     {"id": "secret_bearer", "regex": r"\bBearer\s+[A-Za-z0-9_\-\.]{20,}\b", "severity": "MEDIUM", "category": "secret"},
     {"id": "secret_provider_token", "regex": r"\b" + _j("s", "k") + r"-[A-Za-z0-9]{20,}\b", "severity": "HIGH", "category": "secret"},
+    # Vendor-prefixed tokens are self-identifying, so they are the cheapest and
+    # most reliable catch available - and none of them were covered.
+    {"id": "secret_vendor_token", "regex": r"\b(?:" + "|".join([
+        _j("gh", "[pousr]_"),          # GitHub personal / oauth / user / server / refresh
+        _j("xox", "[baprs]-"),         # Slack
+        _j("AIza", ""),                # Google API
+        _j("ya29", r"\."),             # Google OAuth
+        _j("SG", r"\."),               # SendGrid
+        _j("shp", "at_"),              # Shopify
+        _j("glpat", "-"),              # GitLab
+        _j("npm_", ""),                # npm
+        _j("dop_v1_", ""),             # DigitalOcean
+    ]) + r")[A-Za-z0-9_\-\.]{10,}", "severity": "HIGH", "category": "secret"},
+    # header.payload.signature - three base64url segments.
+    {"id": "secret_jwt", "regex": r"\b" + _j("ey", "J") + r"[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b", "severity": "HIGH", "category": "secret"},
+    # scheme://user:password@host - the password is inline in the URL.
+    {"id": "secret_conn_string", "regex": r"\b[a-z][a-z0-9+.\-]{2,}://[^\s:/@]+:[^\s/@]{4,}@[^\s/]+", "severity": "HIGH", "category": "secret"},
 ]
 
 _ALL_PATTERNS = _INJECTION_PATTERNS + _SECRET_PATTERNS

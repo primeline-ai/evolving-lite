@@ -214,6 +214,8 @@ def test_non_string_prompt_is_survivable(tmp_path, bad):
 _j = lambda *p: "".join(p)
 _FAKE_KEY = _j("sk", "-", "live", "51H8xQ2eZvKYlo2C0", "FAKEexample", "0000")
 _FAKE_PW = _j("hunter2", "correct", "horse", "battery")
+_FAKE_JWT = (_j("ey", "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+             + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5NabcdEFGH")
 
 # 30 words, so it clears the >20-word bar with a single 0.85 pattern. Note this
 # is an ORDINARY instruction, not a correction - which is the point: the gate is
@@ -309,14 +311,16 @@ def test_sentinel_reader_sees_a_healthy_run(tmp_path):
     assert _sentinel_status(root) == "detected"
 
 
-def test_redactor_is_the_scanner_s_own_pattern_list(tmp_path):
-    """One source of truth. If someone hand-copies the patterns into the
-    detector, this stops pointing at the shared list and the two drift."""
-    detector = (REPO / "hooks" / "scripts" / "correction-detector.py").read_text()
-    assert "content-scanner.py" in detector
-    assert "_SECRET_PATTERNS" not in detector, (
-        "credential patterns must live in content-scanner.py only"
-    )
+def test_the_shared_loader_points_at_the_scanner():
+    """One source of truth for what counts as a secret.
+
+    load_redactor() lives in lib/common.py because two hooks need it. If it
+    stops importing content-scanner.py, or a hook hand-copies the pattern list,
+    the two definitions drift - and the one that drifts is the one nobody tests.
+    """
+    common = (REPO / "hooks" / "scripts" / "lib" / "common.py").read_text()
+    assert "content-scanner.py" in common
+    assert "_SECRET_PATTERNS" not in common
 
 
 # --------------------------------------------------------------------------
@@ -358,3 +362,65 @@ def test_banner_version_comes_from_the_manifest(tmp_path):
     assert f"Evolving Lite v{manifest['version']} " in msg, (
         f"banner {msg!r} does not carry manifest version {manifest['version']}"
     )
+
+
+# --------------------------------------------------------------------------
+# The SECOND writer of the raw prompt
+#
+# An internal review found that redacting correction-detector alone was not
+# enough: delegation-enforcer runs on the same UserPromptSubmit event, reads the
+# same `prompt` field, and wrote user_input[:100] verbatim into the pending
+# marker - which the Stop hook drains into delegation-gaps.jsonl. Fixing the
+# sink I happened to be editing would have left the credential in the other one.
+# --------------------------------------------------------------------------
+
+ENFORCER = REPO / "hooks" / "scripts" / "delegation-enforcer.py"
+
+
+def test_delegation_marker_carries_no_credential(tmp_path):
+    root = _plugin_root(tmp_path, session_count=5)
+    runtime = root / "_runtime"
+
+    # The prompt has to CLEAR the delegation threshold or no marker is written
+    # and the test proves nothing. Measured: a prompt containing the words
+    # "secret", "key" or "password" takes the -10 critical-keyword penalty and
+    # scores below 3, so the obvious secret-bearing prompt never reaches this
+    # writer. That penalty is a partial accident of a defence, not a design:
+    # a credential with no such word in it - a bearer token, a JWT, a vendor
+    # token - sails through. So this uses one, which is the case that leaks.
+    prompt = (
+        "Search the entire codebase and find every file where the header "
+        f"Authorization: Bearer {_FAKE_JWT} appears so I can refactor them"
+    )
+    subprocess.run(
+        [sys.executable, str(root / "hooks" / "scripts" / "delegation-enforcer.py")],
+        input=json.dumps({"prompt": prompt, "session_id": "redaction-test"}),
+        capture_output=True, text=True,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "CLAUDE_PLUGIN_ROOT": str(root),
+            "EVOLVING_TMP": str(runtime),
+        },
+    )
+
+    markers = list(runtime.glob("delegation-pending-*.json"))
+    assert markers, (
+        "no marker written - the prompt fell below the delegation threshold, so "
+        "this test would have proven nothing. A skip here is not a pass."
+    )
+
+    blob = markers[0].read_text()
+    assert _FAKE_JWT not in blob, "bearer token persisted verbatim in the delegation marker"
+    assert "REDACTED" in blob, "marker was written but nothing was redacted"
+
+
+def test_both_prompt_writers_use_the_shared_redactor():
+    """Structural pin. If a third writer of the prompt appears, or one of these
+    two stops redacting, this is the check that names it."""
+    for path in (REPO / "hooks" / "scripts" / "correction-detector.py", ENFORCER):
+        src = path.read_text()
+        assert "load_redactor" in src, f"{path.name} persists the prompt without redacting"
+        assert "_SECRET_PATTERNS" not in src, (
+            f"{path.name} carries its own credential patterns - they belong in "
+            "content-scanner.py only"
+        )

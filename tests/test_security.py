@@ -213,3 +213,82 @@ def test_redact_secrets_handles_two_credentials_in_one_string():
 
 def test_redact_secrets_empty_input():
     assert cs.redact_secrets("") == ("", [])
+
+
+# --- redact_secrets: the coverage matrix ------------------------------------
+#
+# The first version of this function inherited secret_assignment's value class
+# [A-Za-z0-9_-.], which excludes / + @ ! =. Measured 2026-08-17: a real AWS
+# secret key, a punctuated password, a postgres connection string, a JWT and
+# every vendor-prefixed token passed through UNREDACTED - 2 of 8 realistic
+# shapes caught. A redactor that misses 75% of credentials while the README
+# promises redaction is worse than none, because it manufactures confidence.
+# These rows are the regression pin. Add a row when a shape is added.
+
+_MUST_REDACT = [
+    ("aws secret key (contains /)", "aws_secret_access_key = " + _j("wJalrXUtnFEMI/K7MDENG/bPx", "RfiCYEXAMPLEKEY")),
+    ("punctuated password", 'password = "' + _j("P@ssw0rd!MyVery", "LongOne2026") + '"'),
+    ("base64 value with +", 'api_key = "' + _j("abcdefghij1234567890+", "tail") + '"'),
+    ("connection string", "postgres://admin:" + _j("s3cr3tP@ss", "word") + "@db.example.com:5432/prod"),
+    ("jwt", "Authorization: " + _j("ey", "JhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N"),
+    ("github token", "token " + _j("gh", "p_") + "16CharsAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+    ("slack token", _j("xox", "b-") + "123456789012-1234567890123-abcdefghijklmnopqrstuvwx"),
+    ("google api key", "key=" + _j("AIza", "SyD-EXAMPLE1234567890abcdefghijk")),
+    ("cloud access key", "id " + _j("AK", "IA") + "IOSFODNN7EXAMPLE"),
+    ("private key block", "-----BEGIN RSA " + _j("PRIVA", "TE") + " " + _j("K", "EY") + "-----\nMIIB"),
+]
+
+# The other half of the pin. Without these a redactor that blanked everything
+# would score 10/10 above and be useless in practice.
+_MUST_NOT_REDACT = [
+    ("plain correction", "You keep forgetting to check tsconfig first"),
+    ("design instruction", "Use a map rather than a list for the lookup table"),
+    ("ordinary url", "See https://primeline.cc/products/evolving-lite for the docs"),
+    ("git ssh remote", "git remote add origin git@github.com:primeline-ai/evolving-lite.git"),
+    ("the word password in prose", "The password reset flow is broken, please look at it"),
+    ("assignment below length floor", "password = short"),
+    ("code with a colon", "const key = config.get('name'): string"),
+    ("install command", "npm install -g @anthropic-ai/claude-code"),
+]
+
+
+def test_redact_secrets_covers_every_known_shape():
+    missed = [n for n, s in _MUST_REDACT if not cs.redact_secrets(s)[1]]
+    assert missed == [], f"credential shapes passed through unredacted: {missed}"
+
+
+def test_redact_secrets_does_not_fire_on_ordinary_text():
+    hit = [(n, cs.redact_secrets(s)[1]) for n, s in _MUST_NOT_REDACT if cs.redact_secrets(s)[1]]
+    assert hit == [], f"false positives on ordinary prompts: {hit}"
+
+
+# The exact secret VALUE in each sample above - what must not survive. A
+# pattern reporting a match is not the same as the credential being gone: an
+# earlier value class matched a prefix and left `[REDACTED:...]+tail_leftover`,
+# which looks like success and leaks.
+_SECRET_VALUES = [
+    _j("wJalrXUtnFEMI/K7MDENG/bPx", "RfiCYEXAMPLEKEY"),
+    _j("P@ssw0rd!MyVery", "LongOne2026"),
+    _j("abcdefghij1234567890+", "tail"),
+    _j("s3cr3tP@ss", "word"),
+    _j("gh", "p_") + "16CharsAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    _j("AIza", "SyD-EXAMPLE1234567890abcdefghijk"),
+    _j("AK", "IA") + "IOSFODNN7EXAMPLE",
+]
+
+
+def test_no_secret_value_survives_redaction():
+    haystack = "\n".join(cs.redact_secrets(s)[0] for _, s in _MUST_REDACT)
+    survivors = [v for v in _SECRET_VALUES if v in haystack]
+    assert survivors == [], f"credential values survived redaction: {survivors}"
+
+
+def test_the_survivor_check_can_actually_fail():
+    """Positive control for the test above.
+
+    If redact_secrets were a no-op, every value would be found. Proving the
+    haystack search works stops the assertion passing because the search is
+    broken rather than because the redaction worked.
+    """
+    haystack = "\n".join(s for _, s in _MUST_REDACT)
+    assert all(v in haystack for v in _SECRET_VALUES)

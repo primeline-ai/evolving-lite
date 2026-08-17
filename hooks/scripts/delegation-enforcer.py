@@ -29,7 +29,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from common import (
     PLUGIN_ROOT, GRAPH_CACHE_DIR, write_sentinel,
-    is_tier_active, read_hook_input, safe_read_json
+    is_tier_active, read_hook_input, safe_read_json, load_redactor
 )
 
 MIN_PROMPT_LENGTH = 10
@@ -215,6 +215,23 @@ def format_delegation_message(score: int, factors: list, routing: dict,
     return msg
 
 
+def _redacted_description(user_input: str) -> str:
+    """The prompt slice stored in the pending marker, credentials removed.
+
+    Fails closed: if the shared redactor cannot be loaded we store a placeholder
+    rather than the raw prompt. The marker itself is still written, because
+    losing it loses the delegation outcome for this turn - only the free-text
+    description is sacrificed.
+    """
+    redact = load_redactor()
+    if redact is None:
+        return "[description withheld: redactor unavailable]"
+    try:
+        return redact(user_input)[0][:100]
+    except Exception:
+        return "[description withheld: redaction failed]"
+
+
 def write_pending_marker(hook_input: dict, score: int, routing: dict,
                          user_input: str) -> None:
     """Write the per-session pending marker the delegation-outcome-tracker
@@ -229,7 +246,14 @@ def write_pending_marker(hook_input: dict, score: int, routing: dict,
             "task_type": routing.get("task_type", "general"),
             "score": score,
             "effective_threshold": DELEGATION_THRESHOLD,
-            "task_description": user_input[:100],
+            # Redacted for the same reason correction-detector redacts: this is
+            # the user's raw prompt, it lands in a file that survives the
+            # session, and the Stop hook drains it into delegation-gaps.jsonl.
+            # Redacting only the correction store would leave the credential
+            # sitting in this one. No redactor -> no description, never a raw
+            # one; the marker itself must still be written or the delegation
+            # outcome for this turn is lost.
+            "task_description": _redacted_description(user_input),
             "emit_ts": datetime.now(timezone.utc).isoformat(),
             "resolved": False,
         }

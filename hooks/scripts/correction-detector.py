@@ -23,32 +23,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 from common import (
     write_sentinel, is_tier_active,
-    create_experience, read_hook_input
+    create_experience, read_hook_input, load_redactor
 )
-
-
-def _load_redactor():
-    """Import redact_secrets() from content-scanner.py (hyphen, so importlib).
-
-    ONE pattern list, two consumers. A hand-copied second copy of the credential
-    patterns is exactly how two lists drift into disagreeing about what a secret
-    is, and the one that drifts is always the one nobody tests.
-
-    Returns None if the scanner cannot be loaded. The caller then declines to
-    WRITE, rather than writing unredacted - this is the one path in this hook
-    that fails closed. Fail-open here would mean "the safety net is missing, so
-    store the credential anyway", which is the opposite of a safety net. The
-    user's turn is never blocked either way.
-    """
-    try:
-        import importlib.util
-        path = Path(__file__).parent / "content-scanner.py"
-        spec = importlib.util.spec_from_file_location("_cs_redactor", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.redact_secrets
-    except Exception:
-        return None
 
 # Detection patterns with weights (all 8 from Evolving)
 PATTERNS = {
@@ -227,7 +203,7 @@ def main():
             # verbatim, this file is the only thing between a pasted credential
             # and a permanent file on disk, and truncating first would leave the
             # tail of a key sitting in plain text inside the 200-char window.
-            redact_secrets = _load_redactor()
+            redact_secrets = load_redactor()
             if redact_secrets is None:
                 write_sentinel("correction-detector", "skip-no-redactor")
                 sys.exit(0)
