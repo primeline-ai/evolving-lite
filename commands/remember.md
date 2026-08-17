@@ -26,7 +26,14 @@ If empty: "What should I remember? Describe what you learned, decided, or want t
    - `tags`: 2-4 relevant keywords
 
 3. **Save as experience file**:
-   Write to `${CLAUDE_PLUGIN_ROOT}/_memory/experiences/exp-{timestamp}.json`
+   Write to `${CLAUDE_PLUGIN_ROOT}/_memory/experiences/exp-{timestamp}.json`,
+   where `{timestamp}` is `YYYYmmdd-HHMMSS`.
+
+   **If that file already exists, append `-2`, then `-3`, until you find a free
+   name** (`exp-20260317-143022-2.json`). The `correction-detector` hook writes
+   into the same directory on the same turn, so a plain timestamp will silently
+   overwrite the experience it just saved - the exact loss this suffix exists to
+   prevent. The `id` field inside the file must match the filename you chose.
 
 4. **Confirm**: "Saved: {summary} [type: {type}, tags: {tags}]"
 
