@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -345,9 +346,36 @@ def test_the_shared_loader_points_at_the_scanner():
 # Health banner - the README quotes this verbatim
 # --------------------------------------------------------------------------
 
+def _bash() -> str:
+    """A bash that can actually run a script.
+
+    On the GitHub Windows runner, plain `bash` resolves to the WSL stub, which
+    prints "Windows Subsystem for Linux has no installed distributions" in
+    UTF-16 and exits 1 - so the hook never runs and the test sees garbage where
+    it expected JSON. The repo's own README already says the hooks need Git
+    Bash; this is the same requirement, in the test harness.
+
+    No other test in this suite shells out to bash yet, so this is the pattern
+    for the ones that come after.
+    """
+    if os.name == "nt":
+        for candidate in (
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            shutil.which("bash.exe"),
+        ):
+            if candidate and Path(candidate).exists() and "System32" not in str(candidate):
+                return str(candidate)
+        pytest.skip("no Git Bash on this Windows host (plain `bash` is the WSL stub)")
+    found = shutil.which("bash")
+    if not found:
+        pytest.skip("no bash on PATH")
+    return found
+
+
 def _run_sentinel(root: Path) -> dict:
     proc = subprocess.run(
-        ["bash", str(root / "hooks" / "scripts" / "health-sentinel.sh")],
+        [_bash(), str(root / "hooks" / "scripts" / "health-sentinel.sh")],
         input="", capture_output=True, text=True, timeout=30,
         env=_sandbox_env(root),
     )
