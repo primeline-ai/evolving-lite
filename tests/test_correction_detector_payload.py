@@ -20,6 +20,7 @@ comment naming the correct shape. The repo knew; this hook did not.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,17 +59,34 @@ def _plugin_root(tmp_path: Path, session_count: int) -> Path:
     return root
 
 
+def _sandbox_env(root: Path) -> dict:
+    """Inherit the real environment, then point the hook at the sandbox.
+
+    Replacing the environment wholesale with a POSIX `PATH` left the child with
+    no `SystemRoot`/`COMSPEC`/`TEMP` on Windows, so the interpreter could not
+    start at all - green on macOS and Linux, red on both Windows legs. Every
+    other subprocess helper in this repo builds `dict(os.environ)` first.
+
+    EVOLVING_TMP is not optional here either: `health-sentinel.sh` runs
+    `find "$RUNTIME_DIR" -type f -mtime +7 -delete` on whatever that resolves
+    to, so an unset value would let a test prune a developer's real runtime
+    files.
+    """
+    env = dict(os.environ)
+    env["CLAUDE_PLUGIN_ROOT"] = str(root)
+    env["EVOLVING_TMP"] = str(root / "_runtime")
+    env.pop("CLAUDE_SESSION_ID", None)  # sentinel filenames must not collide
+    return env
+
+
 def _run_detector(root: Path, payload: dict) -> tuple[int, str]:
     proc = subprocess.run(
         [sys.executable, str(root / "hooks" / "scripts" / "correction-detector.py")],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "CLAUDE_PLUGIN_ROOT": str(root),
-            "EVOLVING_TMP": str(root / "_runtime"),
-        },
+        timeout=30,
+        env=_sandbox_env(root),
     )
     return proc.returncode, proc.stdout
 
@@ -330,9 +348,12 @@ def test_the_shared_loader_points_at_the_scanner():
 def _run_sentinel(root: Path) -> dict:
     proc = subprocess.run(
         ["bash", str(root / "hooks" / "scripts" / "health-sentinel.sh")],
-        input="", capture_output=True, text=True,
+        input="", capture_output=True, text=True, timeout=30,
+        env=_sandbox_env(root),
     )
-    return json.loads(proc.stdout.strip().splitlines()[0])
+    out = proc.stdout.strip()
+    assert out, f"health-sentinel produced no output (rc={proc.returncode}): {proc.stderr[:300]}"
+    return json.loads(out.splitlines()[0])
 
 
 @pytest.mark.skipif(not PREWARMED_SRC.exists(), reason="no prewarmed seeds in tree")
@@ -396,11 +417,8 @@ def test_delegation_marker_carries_no_credential(tmp_path):
         [sys.executable, str(root / "hooks" / "scripts" / "delegation-enforcer.py")],
         input=json.dumps({"prompt": prompt, "session_id": "redaction-test"}),
         capture_output=True, text=True,
-        env={
-            "PATH": "/usr/bin:/bin",
-            "CLAUDE_PLUGIN_ROOT": str(root),
-            "EVOLVING_TMP": str(runtime),
-        },
+        timeout=30,
+        env=_sandbox_env(root),
     )
 
     markers = list(runtime.glob("delegation-pending-*.json"))
