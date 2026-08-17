@@ -7,7 +7,7 @@
 
 ![evolving-lite](assets/hero.png)
 
-**Claude Code that learns from you.** Install once. Work normally. The system remembers what worked, learns from your corrections, and gets better every session - without you lifting a finger.
+**Claude Code that learns from you.** Install once. Work normally. When you tell Claude it keeps making the same mistake, the system stores that correction, and can feed it back as context before a later tool call.
 
 > "I corrected Claude about checking tsconfig strict mode first. A week later, different project, similar type error - Claude checked strict mode before I said anything. That's when I stopped thinking of it as a plugin."
 
@@ -15,7 +15,7 @@
 
 [![Evolving Lite Demo](https://img.youtube.com/vi/mR6Ss6Tnzm4/maxresdefault.jpg)](https://www.youtube.com/watch?v=mR6Ss6Tnzm4)
 
-*2 min demo: Claude recalls past decisions, learns from a correction, and applies it automatically - no prompt needed.*
+*2 min demo: Claude recalls a past decision and a correction is captured and fed back as context.*
 
 ## Self-Star Doctor (`/health`)
 
@@ -42,13 +42,13 @@ scratch copy, so it never touches your real data.
 
 Most Claude Code tools add features. Evolving Lite adds **feedback loops**.
 
-**It learns from corrections.** Say "No, check tsconfig first" once. The system detects the correction, stores it, and recalls it automatically when a similar situation comes up - across sessions, across projects.
+**It learns from corrections.** From session 3, say "You keep forgetting to check tsconfig first" and the detector recognises the repeat signal and stores it as an experience. From session 10, before Claude runs a Write, Edit, Bash or Task call, the system compares that call's input against your stored experiences and can add up to two matching ones to Claude's context. Matching needs at least two shared keywords, so it is a real filter, not a guarantee. The store lives with the plugin install, so projects sharing that install share it.
 
 **It activates progressively.** Session 1: safety net only. Session 3: learning kicks in. Session 10: deep memory. You're never overwhelmed, and each tier earns trust before the next one activates.
 
 **It heals itself.** Every hook writes a sentinel file proving it ran. Run the `health-monitor` agent to check all sentinels - silent failures don't stay silent.
 
-**It gets leaner, not fatter.** Old experiences decay. Stale sessions get archived. The system prunes itself so it stays fast at month 6 the same way it was at day 1.
+**It gets leaner, not fatter.** Low-relevance experiences and stale sessions get archived. The system prunes itself so it stays fast at month 6 the same way it was at day 1.
 
 ## Self-Evolution is ON
 
@@ -123,8 +123,7 @@ claude
 On first start:
 
 ```
-Evolving Lite v1.1.0 | Session 1 | Tier 1 (Safety) | 20 experiences loaded
-The system learns from your corrections automatically.
+Evolving Lite v1.1.0 | Session 1 | Tier 1 (Safety) | 20 experiences
 ```
 
 ### Requirements
@@ -151,11 +150,11 @@ The system learns from your corrections automatically.
 
 ## What to Expect
 
-**Day 1** - You install it and work normally. Context warnings appear at 70%. Dangerous bash commands get blocked. 20 pre-warmed experiences provide Claude Code best practices from day one. You barely notice it's there.
+**Day 1** - You install it and work normally. Context warnings appear at 70%. Dangerous bash commands get blocked. 20 pre-warmed experiences ship with the install, ready for recall once it reaches session 10. You barely notice it's there.
 
-**Week 1 (Session 3+)** - The learning tier activates. When you correct Claude, the system captures it. Exploration tasks start routing to cheaper models automatically. Each session ends with an auto-generated summary of what happened and what's next.
+**Week 1 (Session 3+)** - The learning tier activates. When you tell Claude it keeps making the same mistake, the system captures the correction. Exploration tasks start routing to cheaper models automatically. Each session ends with an auto-generated summary of what happened and what's next.
 
-**Month 1 (Session 10+)** - Deep memory kicks in. While Claude thinks, the system searches your stored experiences and injects relevant solutions before you ask. Old data gets archived automatically. Knowledge survives context compaction. It feels less like a tool and more like a colleague who remembers everything.
+**Month 1 (Session 10+)** - Deep memory kicks in. While Claude thinks, the system searches your stored experiences and can inject a matching one before you ask. Old data gets archived automatically. Knowledge survives context compaction. It feels less like a tool and more like a colleague who keeps notes.
 
 ## How It Works
 
@@ -164,7 +163,7 @@ The system learns from your corrections automatically.
 The system runs on 4 loops that operate in the background. You don't invoke them - they fire on Claude Code events (session start, tool use, prompt submit, session end).
 
 ```
-LEARN    You correct Claude → correction stored → recalled automatically next time
+LEARN    You correct Claude → correction stored → can surface as context later
 CONTEXT  Budget hits 70% → warning → at 93% knowledge is saved → session continues seamlessly
 HEAL     Session starts → sentinel check → broken hook? → you see a warning immediately
 EVOLVE   Usage tracked → stale data archived → routes refined → system stays lean
@@ -172,8 +171,8 @@ EVOLVE   Usage tracked → stale data archived → routes refined → system sta
 
 | Loop | Hooks | What changes |
 |------|-------|-------------|
-| **Learn** | correction-detector, thinking-recall | Claude stops repeating your corrections |
-| **Context** | context-warning, precompact-extract | You never lose knowledge to context compaction |
+| **Learn** | correction-detector, thinking-recall | Your corrections come back to Claude as context |
+| **Context** | context-warning, precompact-extract | Knowledge is saved before context compaction |
 | **Heal** | health-sentinel, health-monitor agent | Silent hook failures get caught via sentinel checks |
 | **Evolve** | usage-tracker, auto-archival | The system prunes itself and stays fast |
 
@@ -189,7 +188,7 @@ All hooks are registered from day one but only fire when their tier is reached:
 
 ### Pre-warmed Experiences
 
-Ships with 20 battle-tested experiences from real Claude Code workflows: debugging patterns, context management, session continuity, delegation strategies, and common gotchas. The system feels informed from session 1 - not empty.
+Ships with 20 battle-tested experiences from real Claude Code workflows: debugging patterns, context management, session continuity, delegation strategies, and common gotchas. The store is populated on install rather than empty, so deep recall has something to match against as soon as it activates.
 
 ## Commands
 
@@ -273,7 +272,7 @@ Evolving Lite is the foundation. Each layer above is optional, free, and strengt
 | [**UPF**](https://github.com/primeline-ai/universal-planning-framework) | 3-stage planning with adversarial hardening - 21 anti-patterns, 6 adversarial perspectives, kill criteria | `git clone` or `curl` one-liner |
 | [**Quantum Lens**](https://github.com/primeline-ai/quantum-lens) | 7 cognitive lenses with anti-convergence - analysis that structurally can't groupthink | `git clone` + pluginDirectories |
 
-**Without Kairn:** keyword-based memory matching (~60% recall). **With Kairn:** semantic understanding (~90% recall), cross-project knowledge, natural language search.
+**Without Kairn:** memory matching is keyword overlap - a stored note surfaces only when a tool call shares at least two of its keywords. **With Kairn:** semantic search, so a note can surface on meaning rather than exact wording, plus natural language search over the store.
 
 Start without extras. Add what you need when you need it.
 
@@ -309,7 +308,7 @@ Yes. Evolving Lite uses the standard plugin system. It doesn't interfere with ot
 <details>
 <summary><strong>What if the system learns something wrong?</strong></summary>
 
-Experiences have a confidence score that decays when recalled but ignored. Bad learnings die naturally. You can also delete any file in `_memory/experiences/` directly.
+Delete the file from `_memory/experiences/` - that is the reliable way to remove it. Auto-archival only moves out experiences whose relevance score is below 30, and a wrongly-saved correction is stored at the detector's own confidence, so it will not fall out on its own.
 </details>
 
 <details>

@@ -166,7 +166,12 @@ def main():
             sys.exit(0)
 
         hook_input = read_hook_input()
-        user_input = hook_input.get("content", hook_input.get("message", ""))
+        # CC's UserPromptSubmit payload carries the text in "prompt";
+        # "content"/"message" kept as fallbacks for older payload shapes.
+        # Reading only content/message made this hook a no-op in production.
+        user_input = (hook_input.get("prompt")
+                      or hook_input.get("content")
+                      or hook_input.get("message", ""))
 
         if not user_input or len(user_input) < 3:
             write_sentinel("correction-detector", "skip-short")
