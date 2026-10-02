@@ -155,7 +155,12 @@ def _make_hooks_repo(tmp_path, register: list[str]) -> Path:
 
 
 def _age_file(path: Path, days: int):
-    ts = (datetime.datetime.now() - datetime.timedelta(days=days)).timestamp()
+    # Relative to the pinned TODAY that run_check is given, never to the real
+    # clock: aging from now() made "200 days old" read as 88 days once the
+    # real date passed 2026-09-28, and made a "5 days old" file lie in the
+    # future of TODAY, so the grace test passed through the age < 0 branch.
+    noon = datetime.datetime.combine(TODAY, datetime.time(12, 0))
+    ts = (noon - datetime.timedelta(days=days)).timestamp()
     os.utime(path, (ts, ts))
 
 

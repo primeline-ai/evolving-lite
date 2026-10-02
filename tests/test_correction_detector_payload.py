@@ -92,6 +92,31 @@ def _run_detector(root: Path, payload: dict) -> tuple[int, str]:
     return proc.returncode, proc.stdout
 
 
+FROZEN_LAUNCHER = Path(__file__).resolve().parent / "_frozen_clock_launcher.py"
+FROZEN_AT = "2026-08-17T21:30:00"
+FROZEN_BASE = "20260817213000"
+
+
+def _run_detector_frozen(root: Path, payload: dict) -> tuple[int, str]:
+    """`_run_detector` with the experience clock pinned INSIDE the child.
+
+    Independently launched writers straddle a second boundary on a slow runner,
+    and then no collision is exercised. Pinning the clock in each child makes
+    every run a same-second run; the detector, its claim logic and its writes
+    are still the real ones.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(FROZEN_LAUNCHER),
+         str(root / "hooks" / "scripts" / "correction-detector.py"), FROZEN_AT],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_sandbox_env(root),
+    )
+    return proc.returncode, proc.stdout
+
+
 def _sentinel_status(root: Path) -> str | None:
     """The status the hook recorded for its own exit path.
 
@@ -498,6 +523,10 @@ def test_both_prompt_writers_use_the_shared_redactor():
 SECOND_CORRECTION = "You keep forgetting to run the migrations before the tests"
 
 
+def _bases_of(saved: list) -> set:
+    return {p.stem.split("-")[1] + p.stem.split("-")[2] for p in saved}
+
+
 def _assert_same_second(saved: list) -> None:
     """Prove the run actually exercised a collision.
 
@@ -508,7 +537,7 @@ def _assert_same_second(saved: list) -> None:
     thing is not a test - so fail loudly when the window was missed, rather
     than passing for the wrong reason.
     """
-    bases = {p.stem.split("-")[1] + p.stem.split("-")[2] for p in saved}
+    bases = _bases_of(saved)
     assert len(bases) == 1, (
         f"the writes straddled a second boundary ({sorted(bases)}), so no "
         "collision was exercised - re-run; this is not a product failure"
@@ -518,11 +547,13 @@ def _assert_same_second(saved: list) -> None:
 def test_two_corrections_in_the_same_second_both_survive(tmp_path):
     root = _plugin_root(tmp_path, session_count=5)
 
-    _run_detector(root, {"prompt": CORRECTION})
-    _run_detector(root, {"prompt": SECOND_CORRECTION})
+    for prompt in (CORRECTION, SECOND_CORRECTION):
+        rc, _out = _run_detector_frozen(root, {"prompt": prompt})
+        assert rc == 0, f"the hook exited {rc} on a same-second write"
 
     saved = _saved(root)
     _assert_same_second(saved)
+    assert _bases_of(saved) == {FROZEN_BASE}, "the pinned clock did not reach the child"
     assert len(saved) == 2, (
         f"expected 2 experiences, found {len(saved)} - a same-second id "
         "collision overwrote one of them"
@@ -625,30 +656,43 @@ def test_claim_is_exclusive_across_processes(tmp_path):
     """
     import concurrent.futures
 
-    root = _plugin_root(tmp_path, session_count=5)
     prompts = [f"You keep forgetting to verify item {i} before shipping" for i in range(8)]
 
-    # A start BARRIER, not just a pool: without it the 8 subprocesses each pay
-    # interpreter startup and can drift across a second boundary, at which point
-    # they take different base ids and a naive check-then-write implementation
-    # passes too. Every reviewer raised this independently.
+    # Each child pins its own clock, so all 8 writers share one second on any
+    # runner; launched with the real clock they straddled a boundary on slow
+    # hosted runners and exercised no collision. A start BARRIER still lines up
+    # the launches so the claims overlap. The barrier syncs the LAUNCHES, not
+    # the claims, so a race is caught only some of the time per round (a
+    # check-then-write mutant: 39 of 40 runs with three rounds); three rounds
+    # run, each fully checked.
     import threading
-    barrier = threading.Barrier(8)
 
-    def _fire(prompt):
-        barrier.wait(timeout=30)
-        return _run_detector(root, {"prompt": prompt})
+    for rnd in range(3):
+        root = _plugin_root(tmp_path / f"round{rnd}", session_count=5)
+        barrier = threading.Barrier(8)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(_fire, prompts))
+        def _fire(prompt, root=root, barrier=barrier):
+            barrier.wait(timeout=30)
+            return _run_detector_frozen(root, {"prompt": prompt})
 
-    saved = _saved(root)
-    assert len(saved) == 8, f"concurrent writes lost {8 - len(saved)} experience(s)"
-    _assert_same_second(saved)
-    ids = [json.loads(p.read_text())["id"] for p in saved]
-    assert len(set(ids)) == 8
-    # No empty placeholders left behind by a claim whose write failed.
-    assert all(p.stat().st_size > 0 for p in saved)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(_fire, prompts))
+        assert all(rc == 0 for rc, _out in results), (
+            f"a writer exited non-zero: {[rc for rc, _out in results]}"
+        )
+
+        saved = _saved(root)
+        assert len(saved) == 8, f"concurrent writes lost {8 - len(saved)} experience(s)"
+        assert _bases_of(saved) == {FROZEN_BASE}, "the pinned clock did not reach the children"
+        # No empty placeholders left behind by a claim whose write failed.
+        assert all(p.stat().st_size > 0 for p in saved)
+        records = [json.loads(p.read_text()) for p in saved]
+        assert all(r["id"] == p.stem for r, p in zip(records, saved))
+        assert len({r["id"] for r in records}) == 8
+        # Every prompt survived, exactly once: no write was overwritten by another.
+        solutions = [r["solution"] for r in records]
+        for prompt in prompts:
+            assert sum(prompt in s for s in solutions) == 1, f"lost or duplicated: {prompt}"
 
 
 def test_a_failed_write_leaves_no_empty_experience_behind(tmp_path, monkeypatch):
