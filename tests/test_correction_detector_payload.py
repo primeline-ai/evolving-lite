@@ -20,12 +20,10 @@ comment naming the correct shape. The repo knew; this hook did not.
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -85,6 +83,31 @@ def _sandbox_env(root: Path) -> dict:
 def _run_detector(root: Path, payload: dict) -> tuple[int, str]:
     proc = subprocess.run(
         [sys.executable, str(root / "hooks" / "scripts" / "correction-detector.py")],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_sandbox_env(root),
+    )
+    return proc.returncode, proc.stdout
+
+
+FROZEN_LAUNCHER = Path(__file__).resolve().parent / "_frozen_clock_launcher.py"
+FROZEN_AT = "2026-08-17T21:30:00"
+FROZEN_BASE = "20260817213000"
+
+
+def _run_detector_frozen(root: Path, payload: dict) -> tuple[int, str]:
+    """`_run_detector` with the experience clock pinned INSIDE the child.
+
+    Independently launched writers straddle a second boundary on a slow runner,
+    and then no collision is exercised. Pinning the clock in each child makes
+    every run a same-second run; the detector, its claim logic and its writes
+    are still the real ones.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(FROZEN_LAUNCHER),
+         str(root / "hooks" / "scripts" / "correction-detector.py"), FROZEN_AT],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
@@ -500,26 +523,8 @@ def test_both_prompt_writers_use_the_shared_redactor():
 SECOND_CORRECTION = "You keep forgetting to run the migrations before the tests"
 
 
-def _sleep_to_next_second(margin: float = 0.01) -> None:
-    """Start the writers just after a wall-clock second boundary.
-
-    The writers are subprocesses, and each pays interpreter startup before it
-    reads the clock. Starting right after a boundary gives them the whole next
-    second to land in, instead of whatever was left of the current one.
-    """
-    now = time.time()
-    time.sleep(math.ceil(now) - now + margin)
-
-
-def _bases(saved: list) -> set:
+def _bases_of(saved: list) -> set:
     return {p.stem.split("-")[1] + p.stem.split("-")[2] for p in saved}
-
-
-# On a contended hosted runner (8 interpreter startups queueing for 2 cores)
-# even an aligned start can spill into the next second. Such an attempt
-# exercised no collision, so it proves nothing either way: it is discarded and
-# re-run in a fresh tree. It never counts as a pass.
-SAME_SECOND_ATTEMPTS = 5
 
 
 def _assert_same_second(saved: list) -> None:
@@ -532,7 +537,7 @@ def _assert_same_second(saved: list) -> None:
     thing is not a test - so fail loudly when the window was missed, rather
     than passing for the wrong reason.
     """
-    bases = _bases(saved)
+    bases = _bases_of(saved)
     assert len(bases) == 1, (
         f"the writes straddled a second boundary ({sorted(bases)}), so no "
         "collision was exercised - re-run; this is not a product failure"
@@ -540,30 +545,27 @@ def _assert_same_second(saved: list) -> None:
 
 
 def test_two_corrections_in_the_same_second_both_survive(tmp_path):
-    for attempt in range(SAME_SECOND_ATTEMPTS):
-        root = _plugin_root(tmp_path / f"attempt{attempt}", session_count=5)
-        _sleep_to_next_second()
-        _run_detector(root, {"prompt": CORRECTION})
-        _run_detector(root, {"prompt": SECOND_CORRECTION})
-        saved = _saved(root)
+    root = _plugin_root(tmp_path, session_count=5)
 
-        # Every integrity check runs on EVERY attempt, before the retry
-        # decision: only a clean straddle may be re-run, never a lost write.
-        assert len(saved) == 2, (
-            f"expected 2 experiences, found {len(saved)} - a same-second id "
-            "collision overwrote one of them"
-        )
-        solutions = " ".join(json.loads(p.read_text())["solution"] for p in saved)
-        assert CORRECTION in solutions, "the FIRST correction is the one that gets lost"
-        assert SECOND_CORRECTION in solutions
-        # The id inside the file must match its own filename, or every consumer
-        # that joins the two disagrees.
-        for path in saved:
-            assert json.loads(path.read_text())["id"] == path.stem
+    _run_detector_frozen(root, {"prompt": CORRECTION})
+    _run_detector_frozen(root, {"prompt": SECOND_CORRECTION})
 
-        if len(_bases(saved)) == 1:
-            break
+    saved = _saved(root)
     _assert_same_second(saved)
+    assert _bases_of(saved) == {FROZEN_BASE}, "the pinned clock did not reach the child"
+    assert len(saved) == 2, (
+        f"expected 2 experiences, found {len(saved)} - a same-second id "
+        "collision overwrote one of them"
+    )
+
+    solutions = " ".join(json.loads(p.read_text())["solution"] for p in saved)
+    assert CORRECTION in solutions, "the FIRST correction is the one that gets lost"
+    assert SECOND_CORRECTION in solutions
+
+    # The id inside the file must match its own filename, or every consumer that
+    # joins the two disagrees.
+    for path in saved:
+        assert json.loads(path.read_text())["id"] == path.stem
 
 
 def _load_common(root: Path):
@@ -655,49 +657,36 @@ def test_claim_is_exclusive_across_processes(tmp_path):
 
     prompts = [f"You keep forgetting to verify item {i} before shipping" for i in range(8)]
 
-    # A start BARRIER, not just a pool: without it the 8 subprocesses each pay
-    # interpreter startup and can drift across a second boundary, at which point
-    # they take different base ids and a naive check-then-write implementation
-    # passes too. Every reviewer raised this independently. The barrier releases
-    # just after a second boundary, so the drift has a whole second to fit in.
+    # Each child pins its own clock, so all 8 writers share one second on any
+    # runner; launched with the real clock they straddled a boundary on slow
+    # hosted runners and exercised no collision. A start BARRIER still lines up
+    # the launches so the claims overlap. A race is caught only some of the
+    # time per round, so three rounds run, each fully checked.
     import threading
 
-    # A race is caught only some of the time per round, so one clean round is
-    # weak evidence. Require two rounds that both landed in one second and both
-    # kept all 8 writes. Measured against a check-then-write mutant of
-    # _claim_experience_id: one round caught it 21 of 40 times, the old
-    # unaligned harness 27 of 40.
-    collision_rounds = 0
-    for attempt in range(SAME_SECOND_ATTEMPTS + 1):
-        root = _plugin_root(tmp_path / f"attempt{attempt}", session_count=5)
-        barrier = threading.Barrier(8, action=_sleep_to_next_second)
+    for rnd in range(3):
+        root = _plugin_root(tmp_path / f"round{rnd}", session_count=5)
+        barrier = threading.Barrier(8)
 
         def _fire(prompt, root=root, barrier=barrier):
             barrier.wait(timeout=30)
-            return _run_detector(root, {"prompt": prompt})
+            return _run_detector_frozen(root, {"prompt": prompt})
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(_fire, prompts))
 
         saved = _saved(root)
-        # Every integrity check runs on EVERY attempt, before the retry
-        # decision: a lost, empty or broken write is a product failure
-        # whatever second it landed in, and only a clean straddle is re-run.
         assert len(saved) == 8, f"concurrent writes lost {8 - len(saved)} experience(s)"
+        assert _bases_of(saved) == {FROZEN_BASE}, "the pinned clock did not reach the children"
         # No empty placeholders left behind by a claim whose write failed.
         assert all(p.stat().st_size > 0 for p in saved)
-        ids = [json.loads(p.read_text())["id"] for p in saved]
-        assert len(set(ids)) == 8
-
-        if len(_bases(saved)) == 1:
-            collision_rounds += 1
-            if collision_rounds == 2:
-                break
-    _assert_same_second(saved)
-    assert collision_rounds == 2, (
-        f"only {collision_rounds} of 2 rounds landed in one second, so the race "
-        "was not exercised twice - re-run; this is not a product failure"
-    )
+        records = [json.loads(p.read_text()) for p in saved]
+        assert all(r["id"] == p.stem for r, p in zip(records, saved))
+        assert len({r["id"] for r in records}) == 8
+        # Every prompt survived, exactly once: no write was overwritten by another.
+        solutions = [r["solution"] for r in records]
+        for prompt in prompts:
+            assert sum(prompt in s for s in solutions) == 1, f"lost or duplicated: {prompt}"
 
 
 def test_a_failed_write_leaves_no_empty_experience_behind(tmp_path, monkeypatch):
