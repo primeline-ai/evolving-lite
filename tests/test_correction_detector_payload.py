@@ -547,8 +547,9 @@ def _assert_same_second(saved: list) -> None:
 def test_two_corrections_in_the_same_second_both_survive(tmp_path):
     root = _plugin_root(tmp_path, session_count=5)
 
-    _run_detector_frozen(root, {"prompt": CORRECTION})
-    _run_detector_frozen(root, {"prompt": SECOND_CORRECTION})
+    for prompt in (CORRECTION, SECOND_CORRECTION):
+        rc, _out = _run_detector_frozen(root, {"prompt": prompt})
+        assert rc == 0, f"the hook exited {rc} on a same-second write"
 
     saved = _saved(root)
     _assert_same_second(saved)
@@ -660,8 +661,10 @@ def test_claim_is_exclusive_across_processes(tmp_path):
     # Each child pins its own clock, so all 8 writers share one second on any
     # runner; launched with the real clock they straddled a boundary on slow
     # hosted runners and exercised no collision. A start BARRIER still lines up
-    # the launches so the claims overlap. A race is caught only some of the
-    # time per round, so three rounds run, each fully checked.
+    # the launches so the claims overlap. The barrier syncs the LAUNCHES, not
+    # the claims, so a race is caught only some of the time per round (a
+    # check-then-write mutant: 39 of 40 runs with three rounds); three rounds
+    # run, each fully checked.
     import threading
 
     for rnd in range(3):
@@ -673,7 +676,10 @@ def test_claim_is_exclusive_across_processes(tmp_path):
             return _run_detector_frozen(root, {"prompt": prompt})
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(_fire, prompts))
+            results = list(pool.map(_fire, prompts))
+        assert all(rc == 0 for rc, _out in results), (
+            f"a writer exited non-zero: {[rc for rc, _out in results]}"
+        )
 
         saved = _saved(root)
         assert len(saved) == 8, f"concurrent writes lost {8 - len(saved)} experience(s)"
