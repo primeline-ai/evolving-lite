@@ -546,22 +546,24 @@ def test_two_corrections_in_the_same_second_both_survive(tmp_path):
         _run_detector(root, {"prompt": CORRECTION})
         _run_detector(root, {"prompt": SECOND_CORRECTION})
         saved = _saved(root)
+
+        # Every integrity check runs on EVERY attempt, before the retry
+        # decision: only a clean straddle may be re-run, never a lost write.
+        assert len(saved) == 2, (
+            f"expected 2 experiences, found {len(saved)} - a same-second id "
+            "collision overwrote one of them"
+        )
+        solutions = " ".join(json.loads(p.read_text())["solution"] for p in saved)
+        assert CORRECTION in solutions, "the FIRST correction is the one that gets lost"
+        assert SECOND_CORRECTION in solutions
+        # The id inside the file must match its own filename, or every consumer
+        # that joins the two disagrees.
+        for path in saved:
+            assert json.loads(path.read_text())["id"] == path.stem
+
         if len(_bases(saved)) == 1:
             break
     _assert_same_second(saved)
-    assert len(saved) == 2, (
-        f"expected 2 experiences, found {len(saved)} - a same-second id "
-        "collision overwrote one of them"
-    )
-
-    solutions = " ".join(json.loads(p.read_text())["solution"] for p in saved)
-    assert CORRECTION in solutions, "the FIRST correction is the one that gets lost"
-    assert SECOND_CORRECTION in solutions
-
-    # The id inside the file must match its own filename, or every consumer that
-    # joins the two disagrees.
-    for path in saved:
-        assert json.loads(path.read_text())["id"] == path.stem
 
 
 def _load_common(root: Path):
@@ -678,9 +680,15 @@ def test_claim_is_exclusive_across_processes(tmp_path):
             list(pool.map(_fire, prompts))
 
         saved = _saved(root)
-        # Loss is checked on EVERY attempt, before any retry: a lost write is a
-        # product failure whatever second it landed in.
+        # Every integrity check runs on EVERY attempt, before the retry
+        # decision: a lost, empty or broken write is a product failure
+        # whatever second it landed in, and only a clean straddle is re-run.
         assert len(saved) == 8, f"concurrent writes lost {8 - len(saved)} experience(s)"
+        # No empty placeholders left behind by a claim whose write failed.
+        assert all(p.stat().st_size > 0 for p in saved)
+        ids = [json.loads(p.read_text())["id"] for p in saved]
+        assert len(set(ids)) == 8
+
         if len(_bases(saved)) == 1:
             collision_rounds += 1
             if collision_rounds == 2:
@@ -690,10 +698,6 @@ def test_claim_is_exclusive_across_processes(tmp_path):
         f"only {collision_rounds} of 2 rounds landed in one second, so the race "
         "was not exercised twice - re-run; this is not a product failure"
     )
-    ids = [json.loads(p.read_text())["id"] for p in saved]
-    assert len(set(ids)) == 8
-    # No empty placeholders left behind by a claim whose write failed.
-    assert all(p.stat().st_size > 0 for p in saved)
 
 
 def test_a_failed_write_leaves_no_empty_experience_behind(tmp_path, monkeypatch):
