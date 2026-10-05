@@ -7,6 +7,8 @@
 
 ![evolving-lite](assets/hero.png)
 
+https://github.com/user-attachments/assets/d7a5847f-c76e-423d-ad96-13b8e1bd382a
+
 **Claude Code that learns from you.** Install once. Work normally. When you tell Claude it keeps making the same mistake, the system stores that correction, and can feed it back as context before a later tool call.
 
 > "I corrected Claude about checking tsconfig strict mode first. A week later, different project, similar type error - Claude checked strict mode before I said anything. That's when I stopped thinking of it as a plugin."
